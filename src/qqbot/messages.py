@@ -1,0 +1,66 @@
+"""将群消息和单聊消息统一成一条可回复的消息。"""
+
+import json
+import re
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Literal
+
+EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"}
+LEGACY_MENTION = re.compile(r"^<@!?\d+>\s*")
+
+
+@dataclass(frozen=True)
+class Message:
+    kind: Literal["users", "groups"]
+    target_id: str
+    message_id: str
+    content: str
+    expires_at: float
+    full_group: bool = False
+
+    @property
+    def key(self) -> str:
+        # 本项目对每条原始消息只回复一次；两个群事件也共享同一个去重键。
+        return json.dumps([self.kind, self.target_id, self.message_id], separators=(",", ":"))
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any], *, accept_full_group: bool = False):
+        event = payload.get("t")
+        if event not in EVENTS or (event == "GROUP_MESSAGE_CREATE" and not accept_full_group):
+            return None
+        data = payload.get("d")
+        if not isinstance(data, dict):
+            raise ValueError("消息事件 d 必须为对象")
+        author = data.get("author")
+        if not isinstance(author, dict):
+            raise ValueError("消息事件缺少 author")
+        if author.get("bot"):
+            return None
+        message_id = data.get("id")
+        kind = "users" if event == "C2C_MESSAGE_CREATE" else "groups"
+        target_id = author.get("user_openid") if kind == "users" else data.get("group_openid")
+        if not all(isinstance(v, str) and 0 < len(v) <= 512 for v in (message_id, target_id)):
+            raise ValueError("消息事件缺少有效的消息 ID 或 OpenID")
+        content = data.get("content", "")
+        if not isinstance(content, str):
+            raise ValueError("content 必须为字符串")
+        if data.get("message_type", 0) != 0 or not content.strip():
+            return None
+        content = content.strip()
+        if event == "GROUP_AT_MESSAGE_CREATE":
+            content = LEGACY_MENTION.sub("", content, count=1).strip()
+        window = 3600 if kind == "users" else 300
+        now = time.time()
+        expires_at = now + window
+        if isinstance(data.get("timestamp"), str):
+            try:
+                sent_at = datetime.fromisoformat(data["timestamp"])
+                if sent_at.tzinfo is not None:
+                    expires_at = min(expires_at, sent_at.timestamp() + window)
+            except ValueError:
+                pass
+        return cls(
+            kind, target_id, message_id, content, expires_at, event == "GROUP_MESSAGE_CREATE"
+        )

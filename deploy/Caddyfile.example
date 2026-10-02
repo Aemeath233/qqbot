@@ -1,0 +1,4 @@
+# 替换为你的域名；域名 A/AAAA 记录指向服务器，并开放入站 80/443。
+bot.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=QQ Bot Webhook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 先创建 qqbot 普通用户，把项目放入 /opt/qqbot，并让此用户拥有项目目录。
+User=qqbot
+WorkingDirectory=/opt/qqbot
+ExecStart=/opt/qqbot/.venv/bin/qqbot serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
