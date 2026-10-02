@@ -2,6 +2,7 @@
 
 Python 3.12+，使用 uv 管理依赖，通过 QQ 官方 Webhook 接收事件、OpenAPI v2 回复文本。
 已实现基础命令、完美校园电量查询，以及兼容 OpenAI 的 LLM 聊天和函数工具调用。
+提供独立的管理网页，可登录后配置凭据、查看本地服务状态并手动测试连接。
 群里 @ 机器人，私聊直接输入；LLM 与电费功能由管理员配置后启用。
 
 仓库：[Aemeath233/qqbot](https://github.com/Aemeath233/qqbot)。真实凭证只配置在本机或服务器 `.env`。
@@ -51,6 +52,48 @@ Invoke-RestMethod http://127.0.0.1:8080/healthz
 
 模拟服务仍会验签，缺省 AppID 为 `local-demo`、Secret 为 `local-demo-secret`，只在终端输出回复。
 它只允许本机监听，并使用独立的 `*.dry-run.sqlite3` 数据库。命令体验用 `demo` 更方便。
+
+## 管理网页
+
+在项目目录启动，无须先填写 QQ 或 LLM 凭据：
+
+```powershell
+uv run qqbot admin
+```
+
+首次启动会在终端要求设置管理密码，输入不显示；然后打开
+[本机管理页](http://127.0.0.1:8081)。密码哈希保存在 `data/admin/password.json`，
+不保存明文管理密码，不纳入 Git。需要重设密码时运行：
+
+```powershell
+uv run qqbot admin --set-password
+# 默认8081被占用时，可改管理端口：
+uv run qqbot admin --port 8082
+```
+
+管理页支持：
+
+- QQ AppID、AppSecret；模型启用开关、API地址、Key、模型名、超时。
+- 电费启用开关、学校及项目、查询地址、默认区域、宿舍目录路径、可选会话信息。
+- 查看本地机器人服务是否健康及配置状态；手动测试 QQ 鉴权、模型文本返回和电费区域接口。
+
+页面不回显已保存的密钥。密钥框留空保留原值，需要清除时明确勾选「清除已有值」。
+由进程环境变量提供的字段在页面中只读，仍需在部署环境修改。
+点击保存会原子更新项目 `.env`，保留其他字段与注释；并发或外部修改导致版本冲突时会停止覆盖。
+**保存后需要重启机器人**：本地重新运行 `uv run qqbot serve`，
+服务器执行 `sudo systemctl restart qqbot`。管理服务可以继续运行。
+
+连接测试使用已保存的配置，只在点击按钮时调用外部服务。
+QQ测试不发送消息，成功后仍需验证官方回调和实际聊天；模型测试产生一次调用，
+只验证文本响应，不表示函数工具能力已完成真实联调。
+电费测试只读取一次区域列表，不扫描宿舍，与诊断脚本共用60秒冷却；
+HTTP429后至少等待10分钟，并尊重更长的Retry-After。
+页面每30秒检查一次**本机**健康接口，不会轮询校园电费或模型服务。
+
+管理服务使用密码登录、HttpOnly会话Cookie、来源与CSRF校验、登录尝试限制和主机名白名单。
+会话8小时后失效，服务重启或重设密码后需重新登录。
+它始终监听127.0.0.1，与机器人回调的8080端口独立。
+在服务器上可直接通过SSH隧道访问，或按下面部署段落配置专用HTTPS管理域名。
 
 ## 在 QQ 开放平台配置
 
@@ -343,6 +386,44 @@ sudo systemctl restart qqbot
 `.env` 和运行数据库未纳入 Git，正常拉取更新会保留服务器自己的配置和数据。
 `--ff-only` 在服务器代码有分叉时停止更新，先处理本地修改，再重新拉取。
 
+### 在服务器运行管理页
+
+先在项目目录、以服务用户设置个人管理密码。以下沿用前面的 `/opt/qqbot` 和 `qqbot` 用户：
+
+```bash
+cd /opt/qqbot
+sudo -u qqbot -H /opt/qqbot/.venv/bin/qqbot admin --set-password
+sudo cp deploy/qqbot-admin.service.example /etc/systemd/system/qqbot-admin.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now qqbot-admin
+```
+
+管理端口只监听服务器回环地址。可在自己电脑建立隧道，把用户名和地址换成你的服务器：
+
+```bash
+ssh -L 8081:127.0.0.1:8081 你的SSH用户@你的服务器
+```
+
+保持SSH窗口连接，再在本机浏览器打开 `http://127.0.0.1:8081`。
+若需要使用公网管理域名，在服务器 `.env` 加入该域名：
+
+```dotenv
+ADMIN_ALLOWED_HOSTS=localhost,127.0.0.1,::1,admin.example.com
+```
+
+将 `deploy/admin.Caddyfile.example` 的管理域名替换为自己的域名，并合并到已有Caddy配置。
+管理页面使用单独域名，原机器人回调配置保留。域名指向服务器后：
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+sudo systemctl restart qqbot-admin
+```
+
+公网域名登录要求HTTPS，并自动使用Secure会话Cookie；无需把8081直接开放到公网。
+代码更新涉及管理服务时，同步依赖后另行执行 `sudo systemctl restart qqbot-admin`。
+管理页只维护配置与连接检查，不执行服务器shell或自行重启服务。
+
 ## Git 中的配置与数据
 
 提交源码、测试、`uv.lock`、配置模板和部署模板。
@@ -376,6 +457,8 @@ uv run ruff format --check .
 新增命令改 `src/qqbot/commands.py` 的 `CommandRouter.reply()`。
 联网任务通过 `CommandRouter.plan()` 入队；`assistant.py` 负责 LLM 工具循环，`tools.py` 注册函数，
 `electricity.py` 负责查询，`dorms.py` 负责目录和别名。
+`admin.py`、`admin_config.py` 和 `admin_auth.py` 分别负责管理服务、配置保存和登录，
+页面静态资源位于 `src/qqbot/resources/admin/`；不依赖前端构建工具或CDN。
 `api.py` 负责 QQ OpenAPI，`server.py` 负责回调，`inbox.py` 负责持久化任务与去重。
 旧数据库首次启动时自动添加任务字段，保留旧的待发回复。
 LLM/查询生成的回复在 QQ 发送前写入数据库；QQ 发送重试不会再次调用模型或重复查询电量。

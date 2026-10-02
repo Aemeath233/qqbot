@@ -10,6 +10,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from qqbot.admin import run_admin
 from qqbot.api import QQAPI, QQAPIError
 from qqbot.assistant import BotAssistant
 from qqbot.commands import CommandRouter
@@ -88,6 +89,9 @@ def main():
     ai_chat.add_argument("prompt", nargs="?", help="省略时进入交互对话")
     export = subcommands.add_parser("export-dorms", help="导出宿舍 JSON 目录，便于维护房号别名")
     export.add_argument("output", type=Path, help="例如 data/room_catalog.json，已有文件不覆盖")
+    admin = subcommands.add_parser("admin", help="启动本机管理网页，无须预先配置 QQ/LLM")
+    admin.add_argument("--port", type=int, default=8081, help="管理端口，默认8081")
+    admin.add_argument("--set-password", action="store_true", help="设置或重设管理密码后退出")
     args = parser.parse_args()
     if args.command == "demo":
         demo()
@@ -102,6 +106,9 @@ def main():
             raise SystemExit(1) from None
         return
     try:
+        if args.command == "admin":
+            run_admin(port=args.port, set_password=args.set_password)
+            return
         settings = Settings.load(
             dry_run=getattr(args, "dry_run", False),
             require_qq=args.command not in {"electricity", "chat"},

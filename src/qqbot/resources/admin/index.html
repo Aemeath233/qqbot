@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QQ 机器人管理</title>
+  <link rel="stylesheet" href="/admin.css">
+  <script src="/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-icon">Q</span><span>QQ 机器人<span class="brand-sub">管理控制台</span></span></a>
+    <div class="header-actions"><span class="local-badge">私人管理页</span><button id="logout" class="quiet" hidden>退出登录</button></div>
+  </header>
+  <main>
+    <section id="login-panel" class="login-layout">
+      <div class="intro">
+        <span class="eyebrow">让配置更简单</span>
+        <h1>机器人，<br>从这里开始。</h1>
+        <p>连接 QQ，配置模型服务，按需启用电费查询。密钥保存在你自己的服务器上。</p>
+        <div class="feature-tags"><span>群聊与私聊</span><span>AI 函数工具</span><span>宿舍电量</span></div>
+      </div>
+      <form id="login-form" class="card login-card">
+        <span class="eyebrow">管理员登录</span>
+        <h2>欢迎回来</h2>
+        <p class="muted">输入首次启动时在终端设置的管理密码。</p>
+        <label for="password">管理密码</label>
+        <input id="password" type="password" autocomplete="current-password" required minlength="8" maxlength="256" placeholder="输入管理密码">
+        <button type="submit" class="primary" id="login-button">登录控制台 <span>→</span></button>
+        <p id="login-message" class="message" role="alert"></p>
+        <p class="small muted">忘记密码时，可在服务器终端重新设置。</p>
+      </form>
+    </section>
+    <section id="dashboard" hidden>
+      <div class="page-heading"><div><span class="eyebrow">配置与连接</span><h1>管理你的机器人</h1><p class="muted">先保存配置，再手动测试连接。密钥输入框留空会保留原值。</p></div><button id="refresh-status" class="secondary">刷新状态</button></div>
+      <div class="status-grid">
+        <article class="status-card"><span class="muted">机器人服务</span><strong id="service-status">检查中</strong><span class="small" id="service-hint">本地服务状态</span></article>
+        <article class="status-card"><span class="muted">QQ 凭据</span><strong id="qq-status">—</strong><span class="small">真实鉴权请手动测试</span></article>
+        <article class="status-card"><span class="muted">AI 聊天</span><strong id="llm-status">—</strong><span class="small">兼容 OpenAI 的服务</span></article>
+        <article class="status-card"><span class="muted">电费查询</span><strong id="electricity-status">—</strong><span class="small">剩余电量，单位为度</span></article>
+      </div>
+      <form id="settings-form">
+        <div id="config-groups" class="config-grid"></div>
+        <div class="save-bar"><div><strong>配置保存在本地</strong><p class="small muted">保存后需要重启机器人；连接测试使用已保存的配置。</p></div><div class="save-actions"><button id="reload-settings" type="button" class="secondary">重新读取</button><button type="submit" id="save-button" class="primary">保存配置</button></div></div>
+        <p id="save-message" class="message" role="status"></p>
+      </form>
+      <aside class="note"><span class="note-dot"></span><div><strong>还需要完成 QQ 开放平台接入</strong><p>QQ 鉴权成功后，在开放平台配置 HTTPS 回调、事件订阅及测试成员，再从 QQ 发送消息验证实际收发。</p></div></aside>
+    </section>
+  </main>
+  <footer><span>QQ Bot <span id="version">· 管理控制台</span></span><span>密钥不会在页面回显，也不会进入 Git 仓库</span></footer>
+</body>
+</html>

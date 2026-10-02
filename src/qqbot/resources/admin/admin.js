@@ -1,0 +1,201 @@
+"use strict";
+
+const groups = [
+  { id: "qq", title: "QQ 机器人", description: "填写 QQ 开放平台的 AppID 与 AppSecret。", test: "测试 QQ 鉴权", fields: [
+    ["QQ_APP_ID", "AppID", "text", "机器人应用 ID"],
+    ["QQ_APP_SECRET", "AppSecret", "secret", "留空保留已配置的密钥"],
+  ]},
+  { id: "llm", title: "AI 模型服务", description: "使用支持 Chat Completions 与函数工具的模型；连接测试会产生一次模型调用。", test: "测试模型连接", fields: [
+    ["LLM_ENABLED", "启用 AI 聊天", "bool"],
+    ["LLM_BASE_URL", "API 地址", "text", "https://你的服务地址/v1"],
+    ["LLM_MODEL", "模型名称", "text", "服务商提供的模型名"],
+    ["LLM_API_KEY", "API Key", "secret", "留空保留已配置的密钥"],
+    ["LLM_TIMEOUT", "请求超时（秒）", "number", "30"],
+  ]},
+  { id: "electricity", title: "宿舍电费", description: "查询剩余电量。连接测试只请求一次区域列表，不遍历宿舍；两次测试至少间隔 60 秒。", test: "测试电费接口", wide: true, fields: [
+    ["ELECTRICITY_ENABLED", "启用电费查询", "bool"],
+    ["ELECTRICITY_DEFAULT_AREA", "默认区域", "text", "留空时按查询结果确认区域"],
+    ["ELECTRICITY_ENDPOINT", "接口地址", "text", "HTTPS 查询地址"],
+    ["ELECTRICITY_MAP_PATH", "宿舍目录路径", "text", "留空使用内置目录"],
+    ["ELECTRICITY_SCHOOL_CODE", "学校代码", "text", "1402"],
+    ["ELECTRICITY_PAY_PROJECT", "缴费项目编号", "number", "953"],
+    ["ELECTRICITY_TOKEN", "会话 Token（可选）", "secret", "当前查询不要求时可留空"],
+    ["ELECTRICITY_COOKIE", "Cookie（可选）", "secret", "当前查询不要求时可留空"],
+    ["ELECTRICITY_TAPP_ID", "应用标识（可选）", "secret", "当前查询不要求时可留空"],
+  ]},
+];
+const controls = new Map();
+let csrf = "", revision = "", timer = null;
+const el = id => document.getElementById(id);
+
+function message(id, text, error = false) {
+  el(id).textContent = text;
+  el(id).classList.toggle("error", error);
+}
+
+async function api(path, payload) {
+  const options = { credentials: "same-origin", headers: {} };
+  if (payload !== undefined) {
+    options.method = "POST";
+    options.headers["Content-Type"] = "application/json";
+    if (csrf) options.headers["X-CSRF-Token"] = csrf;
+    options.body = JSON.stringify(payload);
+  }
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (!response.ok) {
+    if (response.status === 401 && path !== "/api/login") showLogin();
+    throw new Error(data.message || "请求失败，请稍后重试。");
+  }
+  return data;
+}
+
+function showLogin() {
+  csrf = "";
+  clearInterval(timer);
+  el("login-panel").hidden = false;
+  el("dashboard").hidden = true;
+  el("logout").hidden = true;
+  for (const control of controls.values()) {
+    if (control.type === "secret") control.input.value = "";
+  }
+}
+
+function buildForm() {
+  for (const group of groups) {
+    const section = document.createElement("section");
+    section.className = "card config-section" + (group.wide ? " wide" : "");
+    const heading = document.createElement("div");
+    heading.className = "section-heading";
+    const title = document.createElement("h2");
+    title.textContent = group.title;
+    heading.append(title);
+    const description = document.createElement("p");
+    description.className = "section-description";
+    description.textContent = group.description;
+    const fields = document.createElement("div");
+    fields.className = "section-fields";
+    for (const [key, label, type, placeholder] of group.fields) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "field";
+      const labelNode = document.createElement("label");
+      labelNode.htmlFor = key;
+      labelNode.className = type === "bool" ? "toggle" : "field-heading";
+      const labelText = document.createElement("span");
+      labelText.textContent = label;
+      const input = document.createElement("input");
+      input.id = key;
+      input.type = type === "secret" ? "password" : type === "bool" ? "checkbox" : type;
+      input.autocomplete = type === "secret" ? "new-password" : "off";
+      if (placeholder) input.placeholder = placeholder;
+      if (key === "LLM_TIMEOUT") { input.min = "1"; input.max = "120"; input.step = "any"; }
+      if (key === "ELECTRICITY_PAY_PROJECT") input.min = "1";
+      let badge = null, clear = null;
+      if (type === "bool") { labelNode.append(input, labelText); wrapper.append(labelNode); }
+      else { labelNode.append(labelText); wrapper.append(labelNode, input); }
+      if (type === "secret") {
+        badge = document.createElement("span"); badge.className = "secret-status";
+        labelNode.append(badge);
+        const clearLabel = document.createElement("label"); clearLabel.className = "secret-actions";
+        clear = document.createElement("input"); clear.type = "checkbox";
+        clear.addEventListener("change", () => { if (clear.checked) input.value = ""; });
+        input.addEventListener("input", () => { if (input.value) clear.checked = false; });
+        clearLabel.append(clear, document.createTextNode("清除已有值"));
+        wrapper.append(clearLabel);
+      }
+      controls.set(key, { input, type, badge, clear });
+      fields.append(wrapper);
+    }
+    const row = document.createElement("div"); row.className = "test-row";
+    const button = document.createElement("button"); button.type = "button";
+    button.className = "secondary"; button.textContent = group.test;
+    const output = document.createElement("output"); output.className = "test-result";
+    button.addEventListener("click", async () => {
+      button.disabled = true; output.className = "test-result"; output.textContent = "正在测试，请稍候…";
+      try {
+        const result = await api(`/api/test/${group.id}`, {});
+        output.textContent = result.message;
+        output.classList.add(result.ok ? "good" : "error");
+      } catch (error) { output.textContent = error.message; output.classList.add("error"); }
+      finally { button.disabled = false; }
+    });
+    row.append(button, output); section.append(heading, description, fields, row);
+    el("config-groups").append(section);
+  }
+}
+
+function fill(data) {
+  revision = data.revision;
+  if (data.csrf) csrf = data.csrf;
+  for (const [key, control] of controls) {
+    const locked = data.locked_fields.includes(key);
+    control.input.disabled = locked;
+    control.input.title = locked ? "此项由部署环境提供，需要在服务器环境中修改" : "";
+    if (control.type === "secret") {
+      control.input.value = ""; control.clear.checked = false; control.clear.disabled = locked;
+      control.badge.textContent = locked ? "由部署环境提供" : data.secrets[key] ? "已配置" : "未配置";
+      control.badge.classList.toggle("configured", data.secrets[key]);
+    } else if (control.type === "bool") control.input.checked = data.values[key] === "true";
+    else control.input.value = data.values[key] || "";
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const data = await api("/api/status");
+    const names = { live: "运行中", "dry-run": "模拟运行", unavailable: "未运行 / 暂不可达" };
+    el("service-status").textContent = names[data.service];
+    el("service-status").classList.toggle("good", data.service === "live");
+    el("service-hint").textContent = "表示本地服务健康，不代表 QQ 联调完成";
+    for (const [id, ok, yes, no] of [
+      ["qq-status", data.qq_configured, "已配置", "待配置"],
+      ["llm-status", data.llm_enabled, "已启用", "未启用"],
+      ["electricity-status", data.electricity_enabled, "已启用", "未启用"],
+    ]) { el(id).textContent = ok ? yes : no; el(id).classList.toggle("good", ok); }
+    el("version").textContent = `· v${data.version}`;
+  } catch (error) { if (csrf) message("save-message", error.message, true); }
+}
+
+async function loadDashboard() {
+  fill(await api("/api/settings"));
+  el("login-panel").hidden = true; el("dashboard").hidden = false; el("logout").hidden = false;
+  await refreshStatus(); clearInterval(timer); timer = setInterval(refreshStatus, 30000);
+}
+
+el("login-form").addEventListener("submit", async event => {
+  event.preventDefault(); el("login-button").disabled = true;
+  try {
+    const data = await api("/api/login", { password: el("password").value });
+    csrf = data.csrf; message("login-message", ""); await loadDashboard();
+  } catch (error) { message("login-message", error.message, true); }
+  finally { el("password").value = ""; el("login-button").disabled = false; }
+});
+
+el("settings-form").addEventListener("submit", async event => {
+  event.preventDefault(); el("save-button").disabled = true;
+  const values = {}, clear_secrets = [];
+  for (const [key, control] of controls) {
+    if (control.input.disabled) continue;
+    if (control.type === "secret") {
+      if (control.input.value) values[key] = control.input.value;
+      if (control.clear.checked) clear_secrets.push(key);
+    } else values[key] = control.type === "bool" ? control.input.checked : control.input.value;
+  }
+  try {
+    const data = await api("/api/settings", { revision, values, clear_secrets });
+    fill(data); message("save-message", data.message); await refreshStatus();
+  } catch (error) { message("save-message", error.message, true); }
+  finally { el("save-button").disabled = false; }
+});
+
+el("logout").addEventListener("click", async () => {
+  try { await api("/api/logout", {}); showLogin(); }
+  catch (error) { message("save-message", error.message, true); }
+});
+el("reload-settings").addEventListener("click", async () => {
+  try { fill(await api("/api/settings")); message("save-message", "已重新读取保存的配置。"); }
+  catch (error) { message("save-message", error.message, true); }
+});
+el("refresh-status").addEventListener("click", refreshStatus);
+buildForm();
+loadDashboard().catch(() => showLogin());

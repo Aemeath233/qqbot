@@ -1,0 +1,17 @@
+[Unit]
+Description=QQ Bot Admin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qqbot
+WorkingDirectory=/opt/qqbot
+# 先以相同用户在项目目录运行 qqbot admin --set-password。
+ExecStart=/opt/qqbot/.venv/bin/qqbot admin --port 8081
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
