@@ -106,36 +106,41 @@ class ElectricityClient:
             raise ElectricityError(
                 "电费查询网络超时或连接失败，请稍后重试。", "network_error"
             ) from None
-        if not isinstance(data, dict) or data.get("returncode") != "SUCCESS":
-            raise ElectricityError("电费服务查询失败，请核对宿舍或联系管理员。", "business_error")
-        business = data.get("businessData")
-        if not isinstance(business, dict) or business.get("quantityunit") != "度":
-            raise ElectricityError("电费服务返回的电量格式异常，请联系管理员。", "invalid_quantity")
-        quantity = business.get("quantity")
-        try:
-            if isinstance(quantity, bool) or not isinstance(quantity, (str, int, float)):
-                raise ValueError
-            if len(str(quantity)) > 32:
-                raise ValueError
-            amount = Decimal(str(quantity))
-            if (
-                not amount.is_finite()
-                or not 0 <= amount <= 10000000
-                or abs(amount.as_tuple().exponent) > 32
-            ):
-                raise ValueError
-        except (ValueError, InvalidOperation):
-            raise ElectricityError(
-                "电费服务返回的电量数值异常，请联系管理员。", "invalid_quantity"
-            ) from None
         return {
             "ok": True,
             "dormitory": dormitory,
-            "remaining_kwh": format(amount, "f"),
+            "remaining_kwh": parse_electricity_quantity(data),
             "unit": "度",
             "queried_at": datetime.now(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S"),
             "cached": False,
         }
+
+
+def parse_electricity_quantity(data: object) -> str:
+    """机器人与诊断脚本共用的业务状态、单位和电量校验。"""
+    if not isinstance(data, dict) or data.get("returncode") != "SUCCESS":
+        raise ElectricityError("电费服务查询失败，请核对宿舍或联系管理员。", "business_error")
+    business = data.get("businessData")
+    if not isinstance(business, dict) or business.get("quantityunit") != "度":
+        raise ElectricityError("电费服务返回的电量格式异常，请联系管理员。", "invalid_quantity")
+    quantity = business.get("quantity")
+    try:
+        if isinstance(quantity, bool) or not isinstance(quantity, (str, int, float)):
+            raise ValueError
+        if len(str(quantity)) > 32:
+            raise ValueError
+        amount = Decimal(str(quantity))
+        if (
+            not amount.is_finite()
+            or not 0 <= amount <= 10000000
+            or abs(amount.as_tuple().exponent) > 32
+        ):
+            raise ValueError
+    except (ValueError, InvalidOperation):
+        raise ElectricityError(
+            "电费服务返回的电量数值异常，请联系管理员。", "invalid_quantity"
+        ) from None
+    return format(amount, "f")
 
 
 def format_electricity(result: dict) -> str:

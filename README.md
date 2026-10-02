@@ -196,6 +196,59 @@ uv run qqbot electricity "19#312" --area "1"
 实时测试中若出现 TLS 握手/网络失败，说明还没有取得业务响应，应在服务器网络环境复测，
 再核对当前有效请求的地址和会话；不能将这种失败判断为请求参数错误或电量为零。
 
+## 低频接口测试脚本
+
+在项目目录运行 `scripts/test_electricity.py`。它不需要 QQ/LLM 凭证，也不要求开启
+`ELECTRICITY_ENABLED`；仅从本地 `.env` 读取电费学校、项目、目录和会话配置。
+默认使用参考插件的 443 端口，`--port 8087` 可以单独测试旧地址；脚本不使用
+`ELECTRICITY_ENDPOINT`，不会自动尝试多个地址。
+
+先检查配置，这一步完全不联网，也不占用冷却时间：
+
+```powershell
+uv run python scripts/test_electricity.py --dry-run
+```
+
+需要测试时，每次手动执行一次：
+
+```powershell
+uv run python scripts/test_electricity.py
+```
+
+默认只请求一次区域列表，不读取楼栋、楼层或完整房间目录，不查询电量。
+没有自动重试或重定向；超时12秒，两次请求开始时间至少间隔60秒。
+冷却记录保存在 `data/electricity-test/cooldown.sqlite3`，同一项目目录下重新运行、
+切换端口或代理模式都不会跳过冷却。HTTP 429 后至少冷却10分钟；
+服务返回更长的 `Retry-After` 时按它等待。
+这些限制用于减少测试流量，不能保证接口一定不会触发访问限制。
+
+排查 TUN 时，先在当前网络状态执行一次，等待至少60秒，手动关闭 TUN 后再执行相同命令。
+`--proxy direct` 是默认值：忽略 Python 能识别的显式代理设置；它**不能绕过 TUN**。
+`--proxy env` 使用 aiohttp/Python 能识别的环境或系统 HTTP(S) 代理设置：
+
+```powershell
+uv run python scripts/test_electricity.py --proxy env
+# 仅在需要时，等冷却结束后单独测试旧端口：
+uv run python scripts/test_electricity.py --port 8087
+```
+
+无需把这些命令全部运行一遍；先对比 TUN 开/关的同一个请求，成功后再考虑其他测试。
+如果需要验证一间已核对的宿舍，使用：
+
+```powershell
+uv run python scripts/test_electricity.py --dormitory "33#2035"
+# 区域有歧义时可补 --area "2"，房号必须存在于当前配置的目录中。
+```
+
+指定宿舍时也只发一次电量请求，楼号、房号和 roomverify 先在本地目录确认。
+脚本与机器人共用业务成功状态、单位及电量数值校验，不会把金额或异常值报成电量。
+
+结果区分 DNS、TLS、证书、超时、HTTP、业务错误及查询成功。
+每次实际测试保存一个带时间的 `data/electricity-test/report-*.json`，
+不保存 Cookie、Token、代理密码、完整请求头、原始响应或异常文本；可以提供这份报告排查。
+日志和冷却文件均已被 Git 忽略。退出码：0成功，1请求/业务失败，2配置或冷却阻止，130手动中止。
+整个测试过程保持证书验证，不向 QQ、LLM 或微信发送请求。
+
 ## 服务器部署示例（Linux + Caddy）
 
 将公开仓库克隆到 `/opt/qqbot`，在服务器上用 uv 创建运行环境。
