@@ -136,11 +136,14 @@ uv run qqbot chat "帮我查33号楼2035还有多少电"
 
 电费客户端查询的是剩余电量，单位为度。内置旧映射对应 `schoolcode=1402`、`payproid=953`，
 从提供的资料导入并去重为 4097 条宿舍记录；这些记录和接口的当前有效性需要实际核对。
+2026-10-02 用户实测默认 HTTPS 443 接口：区域查询及单间宿舍电量查询均成功，
+当次请求未设置 Token、Cookie 或 TappID；这份旧目录的其他房间仍需按实际情况核对。
 
 ```dotenv
 ELECTRICITY_ENABLED=true
 ELECTRICITY_SCHOOL_CODE=1402
 ELECTRICITY_PAY_PROJECT=953
+ELECTRICITY_ENDPOINT=https://cloudpaygateway.59wanmei.com/paygateway/smallpaygateway/trade
 ELECTRICITY_TOKEN=
 ELECTRICITY_COOKIE=
 ELECTRICITY_TAPP_ID=
@@ -149,6 +152,8 @@ ELECTRICITY_DEFAULT_AREA=
 
 有需要时填写当前有效会话的 Token、Cookie 和应用标识，原压缩包的会话数据不会自动复制。
 接口地址可以用 `ELECTRICITY_ENDPOINT` 改为当前有效的 HTTPS 查询地址。
+更新代码后，如果本机或服务器旧 `.env` 仍将该地址配置为 `:8087`，
+请同步改为上述不含端口的443地址；`.env` 不会随着 `git pull` 自动更新。
 其他学校必须配置自己的学校代码与宿舍目录，不能继续使用这份内置映射。
 
 **房号通过目录匹配，不按数字位数或后缀猜测。**

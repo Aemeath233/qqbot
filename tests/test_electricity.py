@@ -21,6 +21,8 @@ async def test_valid_nested_json_auth_is_server_side_and_cache(settings):
     async def handle(request):
         payload = await request.json()
         inner = json.loads(payload["bizcontent"])
+        serial = inner.pop("idserial")
+        assert len(serial) == 12 and serial.isascii() and serial.isdigit()
         assert inner == {
             "payproid": 953,
             "schoolcode": "1402",

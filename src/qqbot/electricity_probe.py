@@ -5,7 +5,6 @@ import asyncio
 import json
 import math
 import os
-import secrets
 import socket
 import sqlite3
 import ssl
@@ -23,7 +22,12 @@ from dotenv import load_dotenv
 
 from qqbot.commands import SHANGHAI
 from qqbot.dorms import DormDirectory, DormError
-from qqbot.electricity import ORIGIN, ElectricityError, parse_electricity_quantity
+from qqbot.electricity import (
+    ORIGIN,
+    ElectricityError,
+    generate_idserial,
+    parse_electricity_quantity,
+)
 
 COOLDOWN_SECONDS = 60
 THROTTLED_SECONDS = 600
@@ -88,7 +92,7 @@ def make_plan(config: ProbeConfig, args: argparse.Namespace) -> ProbePlan:
     if args.port == 8087:
         origin += ":8087"
     endpoint = origin + "/paygateway/smallpaygateway/trade"
-    serial = datetime.now(SHANGHAI).strftime("%y%m%d") + str(secrets.randbelow(900000) + 100000)
+    serial = generate_idserial()
     label = ""
     if args.dormitory:
         if config.school_code != "1402" and config.map_path is None:

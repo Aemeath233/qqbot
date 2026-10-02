@@ -44,7 +44,7 @@ class Settings:
     electricity_tapp_id: str = ""
     electricity_default_area: str = ""
     electricity_endpoint: str = (
-        "https://cloudpaygateway.59wanmei.com:8087/paygateway/smallpaygateway/trade"
+        "https://cloudpaygateway.59wanmei.com/paygateway/smallpaygateway/trade"
     )
 
     @classmethod

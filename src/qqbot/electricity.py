@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import secrets
 import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -13,8 +14,12 @@ from qqbot.commands import SHANGHAI
 from qqbot.config import Settings
 from qqbot.dorms import DormDirectory, DormError
 
-ENDPOINT = "https://cloudpaygateway.59wanmei.com:8087/paygateway/smallpaygateway/trade"
+ENDPOINT = Settings.electricity_endpoint
 ORIGIN = "https://cloudpaygateway.59wanmei.com:8087"
+
+
+def generate_idserial() -> str:
+    return datetime.now(SHANGHAI).strftime("%y%m%d") + str(secrets.randbelow(900000) + 100000)
 
 
 class ElectricityError(Exception):
@@ -62,6 +67,7 @@ class ElectricityClient:
             "schoolcode": self.settings.electricity_school_code,
             "roomverify": roomverify,
             "businesstype": 2,
+            "idserial": generate_idserial(),
         }
         body = {
             "timestamp": datetime.now(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S"),
