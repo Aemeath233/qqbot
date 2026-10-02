@@ -1,14 +1,23 @@
 """从 .env 和进程环境读取配置，进程环境优先。"""
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
 
 class ConfigurationError(ValueError):
     pass
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
+    if value not in {"true", "false"}:
+        raise ConfigurationError(f"{name} 必须为 true 或 false")
+    return value == "true"
 
 
 @dataclass(frozen=True)
@@ -21,9 +30,25 @@ class Settings:
     accept_group_messages: bool = False
     log_level: str = "INFO"
     dry_run: bool = False
+    llm_enabled: bool = False
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str = field(default="", repr=False)
+    llm_model: str = ""
+    llm_timeout: float = 30
+    electricity_enabled: bool = False
+    electricity_school_code: str = "1402"
+    electricity_pay_project: int = 953
+    electricity_map_path: Path | None = None
+    electricity_token: str = field(default="", repr=False)
+    electricity_cookie: str = field(default="", repr=False)
+    electricity_tapp_id: str = ""
+    electricity_default_area: str = ""
+    electricity_endpoint: str = (
+        "https://cloudpaygateway.59wanmei.com:8087/paygateway/smallpaygateway/trade"
+    )
 
     @classmethod
-    def load(cls, *, dry_run: bool = False) -> "Settings":
+    def load(cls, *, dry_run: bool = False, require_qq: bool = True) -> "Settings":
         load_dotenv(Path.cwd() / ".env", override=False, encoding="utf-8-sig")
         app_id = os.getenv("QQ_APP_ID", "").strip()
         secret = os.getenv("QQ_APP_SECRET", "").strip()
@@ -33,7 +58,7 @@ class Settings:
                 raise ConfigurationError("--dry-run 只允许本机监听，请将 QQ_HOST 设为 127.0.0.1")
             app_id = app_id or "local-demo"
             secret = secret or "local-demo-secret"
-        elif not app_id or not secret:
+        elif require_qq and (not app_id or not secret):
             raise ConfigurationError("请在项目 .env 中填写 QQ_APP_ID 和 QQ_APP_SECRET，再启动服务")
         try:
             port = int(os.getenv("QQ_PORT", "8080"))
@@ -41,22 +66,80 @@ class Settings:
             raise ConfigurationError("QQ_PORT 必须是整数") from None
         if not 1 <= port <= 65535:
             raise ConfigurationError("QQ_PORT 必须在 1～65535 之间")
-        flag = os.getenv("QQ_ACCEPT_GROUP_MESSAGES", "false").strip().lower()
-        if flag not in {"true", "false"}:
-            raise ConfigurationError("QQ_ACCEPT_GROUP_MESSAGES 必须为 true 或 false")
+        accept_group = env_bool("QQ_ACCEPT_GROUP_MESSAGES")
         level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigurationError("LOG_LEVEL 应为 DEBUG、INFO、WARNING、ERROR 或 CRITICAL")
         db_path = Path(os.getenv("QQ_DB_PATH", "data/qqbot.sqlite3"))
         if dry_run:
             db_path = db_path.with_name(f"{db_path.stem}.dry-run{db_path.suffix}")
+        llm_enabled = env_bool("LLM_ENABLED") and not dry_run
+        llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+        llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+        llm_model = os.getenv("LLM_MODEL", "").strip()
+        if llm_enabled:
+            if not llm_api_key or not llm_model:
+                raise ConfigurationError("启用 LLM 时必须填写 LLM_API_KEY 和 LLM_MODEL")
+            url = urlsplit(llm_base_url)
+            if (
+                not url.hostname
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+                or url.scheme not in {"https", "http"}
+                or (url.scheme == "http" and url.hostname not in {"127.0.0.1", "localhost", "::1"})
+            ):
+                raise ConfigurationError("LLM_BASE_URL 必须为 HTTPS 地址；本机服务可以使用 HTTP")
+        try:
+            llm_timeout = float(os.getenv("LLM_TIMEOUT", "30"))
+            pay_project = int(os.getenv("ELECTRICITY_PAY_PROJECT", "953"))
+        except ValueError:
+            raise ConfigurationError(
+                "LLM_TIMEOUT 必须为数字，ELECTRICITY_PAY_PROJECT 必须为整数"
+            ) from None
+        if not math.isfinite(llm_timeout) or not 1 <= llm_timeout <= 120 or pay_project <= 0:
+            raise ConfigurationError("LLM_TIMEOUT 应在 1～120 秒之间，缴费项目编号必须为正整数")
+        electricity_enabled = env_bool("ELECTRICITY_ENABLED") and not dry_run
+        school_code = os.getenv("ELECTRICITY_SCHOOL_CODE", "1402").strip()
+        map_path = os.getenv("ELECTRICITY_MAP_PATH", "").strip()
+        endpoint = os.getenv("ELECTRICITY_ENDPOINT", cls.electricity_endpoint).strip()
+        if electricity_enabled:
+            url = urlsplit(endpoint)
+            if (
+                not url.hostname
+                or url.scheme != "https"
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+            ):
+                raise ConfigurationError("ELECTRICITY_ENDPOINT 必须是无凭证和查询参数的 HTTPS 地址")
+        if electricity_enabled and (not school_code or (school_code != "1402" and not map_path)):
+            raise ConfigurationError(
+                "其他学校必须配置对应的 ELECTRICITY_SCHOOL_CODE 和宿舍映射文件"
+            )
         return cls(
             app_id=app_id,
             app_secret=secret,
             host=host,
             port=port,
             db_path=db_path,
-            accept_group_messages=flag == "true",
+            accept_group_messages=accept_group,
             log_level=level,
             dry_run=dry_run,
+            llm_enabled=llm_enabled,
+            llm_base_url=llm_base_url,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
+            llm_timeout=llm_timeout,
+            electricity_enabled=electricity_enabled,
+            electricity_school_code=school_code,
+            electricity_pay_project=pay_project,
+            electricity_map_path=Path(map_path) if map_path else None,
+            electricity_token=os.getenv("ELECTRICITY_TOKEN", "").strip(),
+            electricity_cookie=os.getenv("ELECTRICITY_COOKIE", "").strip(),
+            electricity_tapp_id=os.getenv("ELECTRICITY_TAPP_ID", "").strip(),
+            electricity_default_area=os.getenv("ELECTRICITY_DEFAULT_AREA", "").strip(),
+            electricity_endpoint=endpoint,
         )

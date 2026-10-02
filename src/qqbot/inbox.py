@@ -4,6 +4,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from qqbot.commands import ReplyTask
 from qqbot.messages import Message
 
 
@@ -32,9 +33,21 @@ class Inbox:
             )
         """)
         self.db.execute("CREATE INDEX IF NOT EXISTS replies_ready ON replies(state, next_try_at)")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(replies)")}
+        # 已部署的旧数据库保留任务，新列默认把旧任务视为已生成的文本回复。
+        for name, definition in {
+            "task_kind": "TEXT NOT NULL DEFAULT 'text'",
+            "task_payload": "TEXT NOT NULL DEFAULT ''",
+            "conversation_key": "TEXT NOT NULL DEFAULT ''",
+            "prepared": "INTEGER NOT NULL DEFAULT 1",
+        }.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE replies ADD COLUMN {name} {definition}")
         self.db.commit()
 
-    def add(self, message: Message, content: str) -> bool:
+    def add(
+        self, message: Message, content: str, *, task_kind: str = "text", task_payload: str = ""
+    ) -> bool:
         now = time.time()
         with self.db:
             self.db.execute(
@@ -53,8 +66,9 @@ class Inbox:
                 raise InboxFull
             self.db.execute(
                 """INSERT INTO replies
-                   (key, kind, target_id, message_id, content, created_at, expires_at, next_try_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (key, kind, target_id, message_id, content, created_at, expires_at, next_try_at,
+                    task_kind, task_payload, conversation_key, prepared)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     message.key,
                     message.kind,
@@ -64,9 +78,25 @@ class Inbox:
                     now,
                     message.expires_at,
                     now,
+                    task_kind,
+                    task_payload,
+                    message.conversation_key,
+                    int(task_kind == "text"),
                 ),
             )
         return True
+
+    def add_task(self, message: Message, task: ReplyTask) -> bool:
+        if task.kind == "text":
+            return self.add(message, task.content)
+        return self.add(message, "", task_kind=task.kind, task_payload=task.content)
+
+    def save_content(self, key: str, content: str):
+        # QQ 发送失败后重试这一份回复，不重新请求 LLM 或重新查询电量。
+        with self.db:
+            self.db.execute(
+                "UPDATE replies SET content = ?, prepared = 1 WHERE key = ?", (content, key)
+            )
 
     def next(self):
         now = time.time()

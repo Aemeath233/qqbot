@@ -47,3 +47,27 @@ def test_ignore_bot_and_nontext_messages():
     payload["d"]["author"]["bot"] = False
     payload["d"]["message_type"] = 3
     assert Message.from_payload(payload) is None
+
+
+def test_plan_natural_chat_and_full_group_requires_explicit_chat():
+    router = CommandRouter()
+    message = Message.from_payload(event_payload(content="帮我查33号楼4032"))
+    assert router.plan(message, llm_enabled=True).kind == "chat"
+    message = Message.from_payload(event_payload(content="/电费 33#4032"))
+    assert router.plan(message).kind == "electricity"
+    message = Message.from_payload(
+        event_payload(group=True, full=True, content="/random"), accept_full_group=True
+    )
+    assert router.plan(message, llm_enabled=True) is None
+    message = Message.from_payload(
+        event_payload(group=True, full=True, content="/聊天 查电量"), accept_full_group=True
+    )
+    assert router.plan(message, llm_enabled=True).kind == "chat"
+
+
+def test_group_conversations_are_scoped_to_author():
+    payload = event_payload(group=True)
+    first = Message.from_payload(payload)
+    payload["d"]["author"]["member_openid"] = "other-user"
+    second = Message.from_payload(payload)
+    assert first.conversation_key != second.conversation_key

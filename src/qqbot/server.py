@@ -4,12 +4,14 @@ import asyncio
 import json
 import logging
 import re
+import time
 from contextlib import suppress
 
 import aiohttp
 from aiohttp import web
 
 from qqbot.api import QQAPI, DryRunAPI, QQAPIError
+from qqbot.assistant import BotAssistant
 from qqbot.commands import CommandRouter
 from qqbot.config import Settings
 from qqbot.inbox import Inbox, InboxFull
@@ -21,9 +23,10 @@ CHALLENGE_TOKEN = re.compile(r"[A-Za-z0-9_+/=\-]{1,1024}")
 
 
 class Runtime:
-    def __init__(self, settings: Settings, api):
+    def __init__(self, settings: Settings, api, assistant):
         self.settings = settings
         self.api = api
+        self.assistant = assistant
         self.signer = WebhookSigner(settings.app_secret)
         self.router = CommandRouter()
         self.inbox = Inbox(settings.db_path)
@@ -39,9 +42,21 @@ class Runtime:
                     await asyncio.wait_for(self.wakeup.wait(), timeout=0.5)
                 continue
             try:
-                await self.api.send_text(
-                    job["kind"], job["target_id"], job["message_id"], job["content"]
-                )
+                content = job["content"]
+                if not job["prepared"]:
+                    budget = max(0.1, min(90, job["expires_at"] - time.time()))
+                    try:
+                        async with asyncio.timeout(budget):
+                            content = await self.assistant.generate(
+                                job["task_kind"], job["task_payload"], job["conversation_key"]
+                            )
+                    except TimeoutError:
+                        content = "查询或 AI 回复超时，请稍后再试。"
+                    self.inbox.save_content(job["key"], content)
+                if time.time() >= job["expires_at"]:
+                    self.inbox.failed(job["key"], job["attempts"], retry=False)
+                    continue
+                await self.api.send_text(job["kind"], job["target_id"], job["message_id"], content)
             except (QQAPIError, aiohttp.ClientError, TimeoutError) as exc:
                 attempts = job["attempts"] + 1
                 retryable = not isinstance(exc, QQAPIError) or exc.retryable
@@ -118,10 +133,10 @@ async def webhook(request: web.Request):
     except (ValueError, TypeError):
         raise web.HTTPBadRequest(text="Invalid message event") from None
     if message is not None:
-        reply = runtime.router.reply(message)
-        if reply is not None:
+        task = runtime.router.plan(message, llm_enabled=runtime.assistant.llm_enabled)
+        if task is not None:
             try:
-                added = runtime.inbox.add(message, reply)
+                added = runtime.inbox.add_task(message, task)
             except InboxFull:
                 raise web.HTTPServiceUnavailable(text="Inbox full") from None
             if added:
@@ -130,7 +145,7 @@ async def webhook(request: web.Request):
     return web.json_response({"op": 12, "d": 0})
 
 
-def create_app(settings: Settings, *, api=None) -> web.Application:
+def create_app(settings: Settings, *, api=None, assistant=None) -> web.Application:
     app = web.Application(client_max_size=1024 * 1024)
 
     async def lifespan(application: web.Application):
@@ -140,7 +155,10 @@ def create_app(settings: Settings, *, api=None) -> web.Application:
                 if api is not None
                 else (DryRunAPI() if settings.dry_run else QQAPI(settings, session))
             )
-            runtime = Runtime(settings, active_api)
+            active_assistant = (
+                assistant if assistant is not None else BotAssistant(settings, session)
+            )
+            runtime = Runtime(settings, active_api, active_assistant)
             application[RUNTIME] = runtime
             runtime.worker = asyncio.create_task(runtime.work(), name="qqbot-replies")
             logger.info("Webhook 服务已启动，回调路径 /qqbot，健康检查 /healthz")

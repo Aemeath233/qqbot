@@ -1,0 +1,12 @@
+{
+  "rooms": [
+    {
+      "area": "2",
+      "area_name": "7—10、30—33号楼",
+      "building": "33",
+      "room": "4032",
+      "aliases": ["432"],
+      "roomverify": "2-11--4-4032"
+    }
+  ]
+}

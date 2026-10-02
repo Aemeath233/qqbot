@@ -1,7 +1,8 @@
 # QQ 群聊与私聊机器人
 
 Python 3.12+，使用 uv 管理依赖，通过 QQ 官方 Webhook 接收事件、OpenAPI v2 回复文本。
-已实现帮助、ping、复读、北京时间和服务状态命令。群里 @ 机器人，私聊直接输入。
+已实现基础命令、完美校园电量查询，以及兼容 OpenAI 的 LLM 聊天和函数工具调用。
+群里 @ 机器人，私聊直接输入；LLM 与电费功能由管理员配置后启用。
 
 仓库：[Aemeath233/qqbot](https://github.com/Aemeath233/qqbot)。真实凭证只配置在本机或服务器 `.env`。
 
@@ -76,6 +77,9 @@ QQ 文档允许回调端口 80、443、8080、8443；下面部署示例使用 HT
 | `/复读 文本`、`/echo 文本` | 重复文本，最多 1000 字 |
 | `/时间`、`/time` | 北京时间，UTC+8 |
 | `/状态`、`/status` | 版本、运行时间、本次启动已发送回复数 |
+| `/电费 33#2035`、`/electricity 33#2035` | 直接查电量，无须 LLM |
+| `/电费 19#312 1` | 指定区域/主菜单，消除重名楼的歧义 |
+| `/聊天 内容`、`/chat 内容` | 与已配置的 LLM 聊天 |
 
 私聊和群 @ 消息可以省略 `/`。图片、语音和卡片消息暂不处理；机器人发出的消息会被忽略。
 普通文本如果不是已支持的命令，会提示查看帮助。
@@ -87,6 +91,110 @@ QQ_ACCEPT_GROUP_MESSAGES=true
 ```
 
 全量模式只响应 `/` 开头且已支持的命令，普通聊天不回复。
+
+## LLM 与自然语言调用工具
+
+电量查询在代码中注册为 `query_electricity` 函数工具。模型识别用户意图、提供楼号和房号，
+后台 Python 执行查询，再将工具结果交给模型完成对话。电量、区域和宿舍号由程序按真实结果展示。
+模型输出的其他电量数字不会替代工具返回值；查询失败也不会显示为 0 度。
+
+在服务器 `.env` 配置支持 **Chat Completions + tools/function calling** 的模型服务：
+
+```dotenv
+LLM_ENABLED=true
+LLM_BASE_URL=https://你的模型服务地址/v1
+LLM_API_KEY=你自己的密钥
+LLM_MODEL=支持函数调用的模型名
+LLM_TIMEOUT=30
+ELECTRICITY_ENABLED=true
+```
+
+`LLM_BASE_URL` 填到 `/v1` 这一层，程序会拼接 `/chat/completions`；按服务商实际 API 基址填写。
+“兼容 OpenAI”不保证所有模型都支持函数调用，需选服务商明确支持 tools 的型号。
+本实现使用 Chat Completions，不适用于只在 Responses API 提供函数调用的模型。
+
+用户可以发送“帮我查33号楼2035宿舍还剩多少电”，或者先说“查电费”，再回答机器人询问的楼号和房号。
+对话上下文保留最近 4 轮，30 分钟无交互后失效；群内按发送者和群隔离，私聊独立，服务重启后清空。
+群全量模式下用 `/聊天 帮我查电费`，日常聊天不会自动触发模型。
+聊天文字与本次工具结果会发给你配置的模型服务；QQ 凭证、电费 Cookie/Token 不会发给模型。
+
+不需要 QQ 凭证即可单独测试模型（会调用真实模型服务）：
+
+```bash
+uv run qqbot chat
+uv run qqbot chat "帮我查33号楼2035还有多少电"
+```
+
+每次对话最多 3 轮模型请求、4 次函数执行，后台任务总时限 90 秒。
+普通帮助、ping 等命令不消耗模型调用。`serve --dry-run` 禁用外部 LLM 和电费请求，只测试本地 QQ 回调。
+
+新增函数在 `src/qqbot/tools.py` 注册 `FunctionTool`，提供参数结构和异步 Python 函数。
+模型只能调用注册的函数，不能自行执行 shell、修改接口地址或传入认证请求头。
+函数调用格式依据 [OpenAI Docs](https://developers.openai.com/api/docs/guides/function-calling)。
+
+## 电费接口与宿舍号
+
+电费客户端查询的是剩余电量，单位为度。内置旧映射对应 `schoolcode=1402`、`payproid=953`，
+从提供的资料导入并去重为 4097 条宿舍记录；这些记录和接口的当前有效性需要实际核对。
+
+```dotenv
+ELECTRICITY_ENABLED=true
+ELECTRICITY_SCHOOL_CODE=1402
+ELECTRICITY_PAY_PROJECT=953
+ELECTRICITY_TOKEN=
+ELECTRICITY_COOKIE=
+ELECTRICITY_TAPP_ID=
+ELECTRICITY_DEFAULT_AREA=
+```
+
+有需要时填写当前有效会话的 Token、Cookie 和应用标识，原压缩包的会话数据不会自动复制。
+接口地址可以用 `ELECTRICITY_ENDPOINT` 改为当前有效的 HTTPS 查询地址。
+其他学校必须配置自己的学校代码与宿舍目录，不能继续使用这份内置映射。
+
+**房号通过目录匹配，不按数字位数或后缀猜测。**
+目录每条记录保存区域、楼号、实际房号、别名和不可拆解的 `roomverify`。
+例如系统显示 `19312`、学生使用 `312` 时，可把房号设为 `312`，别名设为 `19312`，
+但对应 roomverify 必须来自已核对的真实房间记录。当前旧表没有 `19#19312`，不会自动为它编造编号。
+`4032` 与 `432` 等写法也通过明确配置关联，不能把所有 `312` 都匹配为以 `312` 结尾的记录。
+
+导出完整 JSON 目录，保留已有记录后按实际情况补别名：
+
+```bash
+uv run qqbot export-dorms data/room_catalog.json
+```
+
+导出已有文件时会停止，避免覆盖人工维护的目录。在其中某条已确认记录补充 `aliases`，例如：
+
+```json
+{
+  "area": "2",
+  "area_name": "7—10、30—33号楼",
+  "building": "33",
+  "room": "4032",
+  "aliases": ["432"],
+  "roomverify": "2-11--4-4032"
+}
+```
+
+```dotenv
+ELECTRICITY_MAP_PATH=data/room_catalog.json
+```
+
+`deploy/room_catalog.example.json` 是结构示例，仅包含这一条记录；需要查询其他宿舍时使用完整目录。
+如果同一区域的两条房间记录共享一个别名，或者不同区域都存在同名楼和房号，程序返回候选区域并询问，
+不会取第一个结果。只有“312”而没有楼号时，机器人会询问楼号。
+可设置 `ELECTRICITY_DEFAULT_AREA` 固定本机器人的区域，也可让自然语言工具调用提供用户确认的 `area`。
+
+单独验证上游接口，无须 QQ 或模型凭证：
+
+```bash
+uv run qqbot electricity 33#2035
+uv run qqbot electricity "19#312" --area "1"
+```
+
+客户端检查 HTTP 和业务状态，设置 10 秒超时，缓存有效结果 30 秒。
+实时测试中若出现 TLS 握手/网络失败，说明还没有取得业务响应，应在服务器网络环境复测，
+再核对当前有效请求的地址和会话；不能将这种失败判断为请求参数错误或电量为零。
 
 ## 服务器部署示例（Linux + Caddy）
 
@@ -194,7 +302,7 @@ sudo systemctl restart qqbot
 
 SQLite 位于 `data/qqbot.sqlite3`，包含待发回复和目标 OpenID，应保存在服务器本地可写磁盘。
 健康检查 `ok` 表示本地服务及后台处理正常；真实 QQ 接入是否成功以平台验证和消息联调为准。
-当前实现的是收到消息后回复，未实现主动群发、定时提醒、AI 聊天或群管理。
+当前实现的是收到消息后回复，未实现主动群发、定时提醒或群管理。
 
 ## 开发与验证
 
@@ -208,7 +316,11 @@ uv run ruff format --check .
 覆盖官方回调验证与公钥样例、原始字节验签、群聊/私聊回复、鉴权缓存、去重、重启恢复和错误处理。
 
 新增命令改 `src/qqbot/commands.py` 的 `CommandRouter.reply()`。
-`api.py` 负责 OpenAPI，`server.py` 负责回调，`inbox.py` 负责持久化任务与去重。
+联网任务通过 `CommandRouter.plan()` 入队；`assistant.py` 负责 LLM 工具循环，`tools.py` 注册函数，
+`electricity.py` 负责查询，`dorms.py` 负责目录和别名。
+`api.py` 负责 QQ OpenAPI，`server.py` 负责回调，`inbox.py` 负责持久化任务与去重。
+旧数据库首次启动时自动添加任务字段，保留旧的待发回复。
+LLM/查询生成的回复在 QQ 发送前写入数据库；QQ 发送重试不会再次调用模型或重复查询电量。
 
 ## 常见问题
 

@@ -186,3 +186,50 @@ async def test_pending_reply_survives_worker_cancellation(settings):
     async with TestClient(TestServer(create_app(settings, api=recovered))):
         await asyncio.wait_for(recovered.called.wait(), 1)
         assert recovered.calls[0][2] == "msg-1"
+
+
+async def test_ack_does_not_wait_for_llm_and_sending_retry_reuses_reply(settings):
+    class BlockingAssistant:
+        llm_enabled = True
+
+        def __init__(self):
+            self.calls = 0
+            self.called = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def generate(self, kind, payload, key):
+            self.calls += 1
+            self.called.set()
+            await self.release.wait()
+            return "实际电量12.23度"
+
+    class RetryAPI(RecordingAPI):
+        async def send_text(self, *args):
+            self.calls.append(args)
+            self.called.set()
+            if len(self.calls) == 1:
+                raise QQAPIError(503, "temporary")
+            return {"id": "done"}
+
+    assistant = BlockingAssistant()
+    api = RetryAPI()
+    app = create_app(settings, api=api, assistant=assistant)
+    async with TestClient(TestServer(app)) as client:
+        body, headers = signed_payload(settings, event_payload(content="查33号楼4032的电量"))
+        response = await asyncio.wait_for(client.post("/qqbot", data=body, headers=headers), 1)
+        assert response.status == 200
+        await asyncio.wait_for(assistant.called.wait(), 1)
+        assert api.calls == []
+        assistant.release.set()
+        await asyncio.wait_for(api.called.wait(), 1)
+        assert app[RUNTIME].inbox.db.execute("SELECT prepared FROM replies").fetchone()[0] == 1
+        with app[RUNTIME].inbox.db:
+            app[RUNTIME].inbox.db.execute("UPDATE replies SET next_try_at=0")
+        app[RUNTIME].wakeup.set()
+        for _ in range(50):
+            if len(api.calls) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(api.calls) == 2
+        assert assistant.calls == 1
+        assert api.calls[0][-1] == api.calls[1][-1] == "实际电量12.23度"
