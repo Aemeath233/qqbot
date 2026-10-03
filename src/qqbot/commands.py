@@ -24,6 +24,9 @@ HELP = (
     "/电费历史 [天数]、/用电统计 [天数] [楼号#房号] [区域]\n"
     "/掷骰子 [2d6]、/抽签 [选项A|选项B]：小互动\n"
     "/技能列表、/技能 名称 任务：查看或使用已启用的文档技能\n"
+    "/我的标识：查看用于授权的当前用户和群标识\n"
+    "/用电曲线 [天数] [30或60分钟]、/撤销曲线链接\n"
+    "/做网页 需求、/我的网页、/撤回网页 ID、/删除网页 ID\n"
     "/聊天 内容：与 AI 聊天（需管理员启用）\n"
     "启用 AI 后，也可直接说“查一下33号楼2035还剩多少电”。\n"
     "群里先 @机器人，再输入命令；私聊直接输入即可。"
@@ -48,6 +51,38 @@ class CommandRouter:
         parts = text.removeprefix("/").lstrip().split(maxsplit=1)
         command = parts[0].lower() if parts else "help"
         argument = parts[1] if len(parts) == 2 else ""
+        if command in {"我的标识", "identity"}:
+            return ReplyTask("identity", "")
+        if command in {"用电曲线", "电量曲线", "curve"}:
+            values = argument.split()
+            try:
+                if len(values) > 2:
+                    raise ValueError
+                params = {
+                    "days": int(values[0]) if values else 30,
+                    "minutes": int(values[1]) if len(values) == 2 else 0,
+                }
+            except ValueError:
+                return ReplyTask("text", "用法：/用电曲线 [天数] [30或60分钟]。")
+            return ReplyTask("curve", json.dumps(params))
+        if command in {"做网页", "生成网页"}:
+            return (
+                ReplyTask("webpage", argument)
+                if argument
+                else ReplyTask("text", "用法：/做网页 一个简洁的AA计算器。")
+            )
+        page_actions = {
+            "我的网页": "list",
+            "撤销曲线链接": "revoke_curve",
+            "撤回网页": "retract",
+            "删除网页": "delete",
+            "网页预览": "preview",
+        }
+        if command in page_actions:
+            return ReplyTask(
+                "portal_action",
+                json.dumps({"action": page_actions[command], "identifier": argument}),
+            )
         if command in {"技能列表", "skills"}:
             return ReplyTask("skill_list", "")
         if command in {"技能", "skill"}:

@@ -16,6 +16,7 @@ from qqbot.commands import CommandRouter
 from qqbot.config import Settings
 from qqbot.inbox import Inbox, InboxFull
 from qqbot.messages import Message
+from qqbot.public_portal import register_portal
 from qqbot.signing import WebhookSigner
 
 logger = logging.getLogger(__name__)
@@ -184,4 +185,5 @@ def create_app(settings: Settings, *, api=None, assistant=None) -> web.Applicati
     app.cleanup_ctx.append(lifespan)
     app.router.add_get("/healthz", health)
     app.router.add_post("/qqbot", webhook)
+    register_portal(app, settings)
     return app

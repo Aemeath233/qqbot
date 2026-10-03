@@ -62,6 +62,12 @@ class Settings:
     skills_dir: Path = Path("data/skills")
     toolpacks_enabled: bool = True
     toolpacks_dir: Path = Path("data/toolpacks")
+    access_path: Path = Path("data/access/policy.json")
+    portal_enabled: bool = False
+    public_base_url: str = ""
+    portal_db_path: Path = Path("data/portal.sqlite3")
+    curve_link_minutes: int = 60
+    page_visibility: str = "public"
     electricity_history_enabled: bool = True
     electricity_history_retention_days: int = 365
 
@@ -191,6 +197,53 @@ class Settings:
             raise ConfigurationError("历史保留天数必须为1～3650的整数。") from None
         if not 1 <= retention <= 3650:
             raise ConfigurationError("历史保留天数必须为1～3650的整数。")
+        portal_enabled = env_bool("PORTAL_ENABLED", values=values)
+        public_base_url = values.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if public_base_url:
+            try:
+                url = urlsplit(public_base_url)
+            except ValueError:
+                raise ConfigurationError("公开域名格式无效。") from None
+            if (
+                not url.hostname
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+                or url.path
+                or (
+                    url.scheme != "https"
+                    and not (
+                        url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+                    )
+                )
+            ):
+                raise ConfigurationError("PUBLIC_BASE_URL应为HTTPS域名根地址；本机测试可使用HTTP。")
+            try:
+                if len(public_base_url) > 512 or any(ord(char) < 32 for char in public_base_url):
+                    raise ValueError
+                hostname = url.hostname.encode("idna").decode("ascii")
+                port = url.port
+            except (ValueError, UnicodeError):
+                raise ConfigurationError("公开域名或端口格式无效。") from None
+            hostname = f"[{hostname}]" if ":" in hostname else hostname
+            authority = (
+                hostname
+                if port in {None, 443 if url.scheme == "https" else 80}
+                else f"{hostname}:{port}"
+            )
+            public_base_url = f"{url.scheme}://{authority}"
+        if portal_enabled and not public_base_url:
+            raise ConfigurationError("启用用户网页前请填写PUBLIC_BASE_URL。")
+        try:
+            curve_minutes = int(values.get("CURVE_LINK_MINUTES", "60"))
+        except ValueError:
+            raise ConfigurationError("曲线访问链接有效期应为30或60分钟。") from None
+        if curve_minutes not in {30, 60}:
+            raise ConfigurationError("曲线访问链接有效期应为30或60分钟。")
+        visibility = values.get("PAGE_VISIBILITY", "public")
+        if visibility not in {"public", "unlisted"}:
+            raise ConfigurationError("网页发布方式应为public或unlisted。")
         return cls(
             app_id=app_id,
             app_secret=secret,
@@ -226,6 +279,12 @@ class Settings:
             skills_dir=Path(values.get("SKILLS_DIR", "data/skills")),
             toolpacks_enabled=env_bool("TOOLPACKS_ENABLED", True, values=values),
             toolpacks_dir=Path(values.get("TOOLPACKS_DIR", "data/toolpacks")),
+            access_path=Path(values.get("ACCESS_POLICY_PATH", "data/access/policy.json")),
+            portal_enabled=portal_enabled,
+            public_base_url=public_base_url,
+            portal_db_path=Path(values.get("PORTAL_DB_PATH", "data/portal.sqlite3")),
+            curve_link_minutes=curve_minutes,
+            page_visibility=visibility,
             electricity_history_enabled=env_bool(
                 "ELECTRICITY_HISTORY_ENABLED", True, values=values
             ),

@@ -41,6 +41,12 @@ const groups = [
     ["SKILLS_ENABLED", "启用文档技能", "bool"],
     ["TOOLPACKS_ENABLED", "启用可执行 MCP 工具包", "bool"],
   ]},
+  { id:"portal",page:"portal",title:"用户网页与曲线",wide:true,description:"一个bot子域名承载所有页面。曲线通过短期链接访问，生成的小网页默认公开；保存后重启QQ服务。",fields:[
+    ["PORTAL_ENABLED","启用用户网页","bool"],
+    ["PUBLIC_BASE_URL","Bot公开根地址","text","https://bot.你的域名"],
+    ["CURVE_LINK_MINUTES","曲线链接有效期","select","",{"30":"半小时","60":"一小时"}],
+    ["PAGE_VISIBILITY","生成网页的发布方式","select","",{public:"公开路径",unlisted:"一小时随机访问链接"}],
+  ]},
 ];
 const controls = new Map();
 const sections = new Map();
@@ -53,6 +59,8 @@ const pageInfo = {
   tools: ["功能开关", "保留日常用得上的功能，按需关闭小互动。"],
   skills: ["技能", "按通用 Agent Skills 结构导入与管理，使用现有工具完成任务。"],
   toolpacks: ["MCP 工具", "上传、审查、信任并启用。机器人自动启动工具进程并将函数交给模型。"],
+  portal: ["用户网页", "配置域名与链接有效期，管理已生成的页面。"],
+  access: ["工具权限", "按群、用户控制内置函数和MCP工具；精确规则优先，保存即生效。"],
 };
 let currentPage = "overview";
 let csrf = "", revision = "", timer = null;
@@ -181,7 +189,9 @@ function showPage(page) {
   el("chat-panel").hidden = page !== "chat";
   el("skills-panel").hidden = page !== "skills";
   el("toolpacks-panel").hidden = page !== "toolpacks";
-  el("settings-form").hidden = ["overview","chat","skills","toolpacks"].includes(page);
+  el("access-panel").hidden = page !== "access";
+  el("pages-panel").hidden = page !== "portal";
+  el("settings-form").hidden = ["overview","chat","skills","toolpacks","access"].includes(page);
   el("module-list").hidden = page !== "tools";
   for (const section of sections.values()) section.element.hidden = section.page !== page;
   for (const button of document.querySelectorAll(".sidebar [data-page]")) {
@@ -275,6 +285,8 @@ async function loadDashboard() {
   document.body.classList.add("dashboard-mode"); showPage(currentPage);
   if (currentPage === "skills") await refreshSkills();
   if (currentPage === "toolpacks") await refreshToolpacks();
+  if (currentPage === "access") await refreshAccess();
+  if (currentPage === "portal") await refreshPages();
   await refreshStatus(); clearInterval(timer); timer = setInterval(refreshStatus, 30000);
 }
 
@@ -313,7 +325,11 @@ el("reload-settings").addEventListener("click", async () => {
   catch (error) { message("save-message", error.message, true); }
 });
 el("refresh-status").addEventListener("click", refreshStatus);
-for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => { showPage(button.dataset.page); if (button.dataset.page === "skills") refreshSkills().catch(error => message("skill-message",error.message,true)); if (button.dataset.page === "toolpacks") refreshToolpacks().catch(error => message("toolpack-message",error.message,true)); });
+for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => {
+  showPage(button.dataset.page);
+  const loaders = {skills:[refreshSkills,"skill-message"],toolpacks:[refreshToolpacks,"toolpack-message"],access:[refreshAccess,"access-message"],portal:[refreshPages,"pages-message"]};
+  const loader = loaders[button.dataset.page]; if(loader) loader[0]().catch(error => message(loader[1],error.message,true));
+});
 for (const button of document.querySelectorAll("[data-prompt]")) button.addEventListener("click", () => { el("chat-message").value = button.dataset.prompt; el("chat-message").focus(); });
 
 function bubble(role, text) {

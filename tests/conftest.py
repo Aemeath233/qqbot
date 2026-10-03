@@ -15,6 +15,8 @@ def settings(tmp_path):
         db_path=tmp_path / "inbox.sqlite3",
         skills_dir=tmp_path / "skills",
         toolpacks_dir=tmp_path / "toolpacks",
+        access_path=tmp_path / "access.json",
+        portal_db_path=tmp_path / "portal.sqlite3",
     )
 
 

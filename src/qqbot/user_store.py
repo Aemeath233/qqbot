@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -183,6 +184,21 @@ class UserStore:
         identity = self.identity(context)
         if identity is None:
             raise UserDataError("缺少稳定的发送者标识，暂时不能读取个人历史。")
+        return self._readings_by_identity(identity, days, meter_key=meter_key, limit=limit)
+
+    def _readings_by_identity(self, identity, days, *, meter_key="", limit=3000):
+        """仅供已验证访问能力的服务端调用，不注册为模型或HTTP参数。"""
+        if (
+            not isinstance(identity, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", identity)
+            or isinstance(days, bool)
+            or not isinstance(days, int)
+            or not 1 <= days <= 365
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 20000
+        ):
+            raise UserDataError("历史读取参数无效。")
         if not self.path.exists():
             return []
         now = self.clock()

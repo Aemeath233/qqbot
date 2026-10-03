@@ -1,4 +1,6 @@
-# 替换为你的域名；域名 A/AAAA 记录指向服务器，并开放入站 80/443。
+# 替换为你的bot子域名；A/AAAA记录指向服务器，开放入站80/443。
+# PUBLIC_BASE_URL使用同一HTTPS根地址，并在QQ开放平台配置消息URL域名。
+# 整站转发同时承载 /qqbot、/u/…曲线、/p/…用户网页；管理页使用独立域名。
 bot.example.com {
     reverse_proxy 127.0.0.1:8080
 }

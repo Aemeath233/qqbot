@@ -11,6 +11,7 @@ from referencing.exceptions import NoSuchResource, Unresolvable
 
 from qqbot.electricity import ElectricityClient, ElectricityError
 from qqbot.games import GameError, draw_lots, roll_dice
+from qqbot.portal_store import PortalError
 from qqbot.skills import MAX_FILE, SkillError
 from qqbot.user_store import UserDataError
 
@@ -22,6 +23,7 @@ class FunctionTool:
     parameters: dict
     handler: Callable[..., Awaitable[dict]]
     full_schema: bool = False
+    arguments_limit: int = 4000
 
 
 def validate_schema(schema):
@@ -61,8 +63,9 @@ def invalid_json_constant(value):
 
 
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, *, allowed=None):
         self._tools: dict[str, FunctionTool] = {}
+        self.allowed = allowed or (lambda name: True)
 
     def register(self, tool: FunctionTool):
         if tool.name in self._tools:
@@ -80,12 +83,19 @@ class ToolRegistry:
                 },
             }
             for tool in self._tools.values()
+            if self.allowed(tool.name)
         ]
 
     async def execute(self, name: str, arguments: str) -> dict:
         if name not in self._tools:
             return {"ok": False, "error": "unknown_tool", "message": "当前不支持这个功能。"}
-        if not isinstance(arguments, str) or len(arguments) > 4000:
+        if not self.allowed(name):
+            return {
+                "ok": False,
+                "error": "forbidden",
+                "message": "当前用户或群未获准使用这个工具。",
+            }
+        if not isinstance(arguments, str) or len(arguments) > self._tools[name].arguments_limit:
             return self._invalid()
         try:
             values = json.loads(arguments, parse_constant=invalid_json_constant)
@@ -99,7 +109,10 @@ class ToolRegistry:
                 ).validate(values)
             except (ValidationError, SchemaError, ValueError, RecursionError, Unresolvable):
                 return self._invalid()
-            return await tool.handler(**values) if isinstance(values, dict) else self._invalid()
+            try:
+                return await tool.handler(**values) if isinstance(values, dict) else self._invalid()
+            except (PortalError, UserDataError) as exc:
+                return {"ok": False, "message": str(exc)}
         properties = tool.parameters.get("properties", {})
         if (
             not isinstance(values, dict)

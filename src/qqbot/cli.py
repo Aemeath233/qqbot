@@ -53,7 +53,7 @@ async def query_electricity(settings: Settings, dormitory: str, area: str = ""):
 
 async def chat(settings: Settings, prompt: str | None):
     async with aiohttp.ClientSession() as session:
-        assistant = BotAssistant(settings, session)
+        assistant = BotAssistant(settings, session, audience="console")
         router = CommandRouter()
 
         async def respond(text: str):

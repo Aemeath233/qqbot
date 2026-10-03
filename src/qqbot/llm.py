@@ -15,7 +15,10 @@ class ChatCompletionsClient:
         self.session = session
 
     async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
-        body = {"model": self.settings.llm_model, "messages": messages, "max_tokens": 800}
+        budget = (
+            6000 if any(tool["function"]["name"] == "create_webpage" for tool in tools) else 800
+        )
+        body = {"model": self.settings.llm_model, "messages": messages, "max_tokens": budget}
         if tools:
             body.update(tools=tools, tool_choice="auto")
         try:

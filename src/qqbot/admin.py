@@ -18,6 +18,7 @@ import aiohttp
 from aiohttp import web
 
 from qqbot import __version__
+from qqbot.access import AccessError, AccessStore
 from qqbot.admin_auth import LoginLimit, PasswordStore, Sessions
 from qqbot.admin_config import ConfigConflict, ConfigStore
 from qqbot.api import QQAPI, QQAPIError
@@ -35,6 +36,7 @@ from qqbot.electricity_probe import (
 from qqbot.llm import ChatCompletionsClient, LLMError
 from qqbot.mcp_runtime import MCPManager
 from qqbot.messages import Message
+from qqbot.portal_store import PortalError, PortalStore
 from qqbot.skills import MAX_UPLOAD, SkillError, SkillStore
 from qqbot.toolpacks import ToolPackError
 from qqbot.user_store import UserDataError, UserStore
@@ -77,6 +79,7 @@ class AdminState:
         self.chat_lock = asyncio.Lock()
         self.skill_lock = asyncio.Lock()
         self.tool_lock = asyncio.Lock()
+        self.access_lock = asyncio.Lock()
         self.assistant = None
         self.assistant_revision = ""
         self.assistant_factory = assistant_factory
@@ -84,6 +87,12 @@ class AdminState:
         self.checks = checks or {"qq": test_qq, "llm": test_llm, "electricity": test_electricity}
         self.session: aiohttp.ClientSession | None = None
         values = self.config.values()
+        self.access_store = AccessStore(
+            self.root / Path(values.get("ACCESS_POLICY_PATH", "data/access/policy.json"))
+        )
+        self.portal_store = PortalStore(
+            self.root / Path(values.get("PORTAL_DB_PATH", "data/portal.sqlite3"))
+        )
         self.tool_manager = MCPManager(
             self.root / Path(values.get("TOOLPACKS_DIR", "data/toolpacks")),
             enabled=lambda: env_bool("TOOLPACKS_ENABLED", True, values=self.config.values()),
@@ -110,7 +119,14 @@ class AdminState:
             if settings.toolpacks_dir.is_absolute()
             else self.root / settings.toolpacks_dir
         )
-        return replace(settings, db_path=path, skills_dir=skills_dir, toolpacks_dir=toolpacks_dir)
+        return replace(
+            settings,
+            db_path=path,
+            skills_dir=skills_dir,
+            toolpacks_dir=toolpacks_dir,
+            access_path=self.root / settings.access_path,
+            portal_db_path=self.root / settings.portal_db_path,
+        )
 
     def chat_assistant(self):
         revision = self.config.revision()
@@ -128,6 +144,7 @@ class AdminState:
                         self.root / "data/electricity-test/cooldown.sqlite3",
                     ),
                     tool_manager=self.tool_manager,
+                    audience="admin",
                 )
             )
             self.assistant_revision = revision
@@ -175,7 +192,14 @@ async def security(request: web.Request, handler):
         response = web.json_response({"message": exc.text}, status=exc.status)
     except ConfigConflict as exc:
         response = web.json_response({"message": str(exc)}, status=409)
-    except (ConfigurationError, ProbeError, SkillError, ToolPackError) as exc:
+    except (
+        ConfigurationError,
+        ProbeError,
+        SkillError,
+        ToolPackError,
+        AccessError,
+        PortalError,
+    ) as exc:
         response = web.json_response({"message": str(exc)}, status=400)
     except (OSError, sqlite3.Error):
         response = web.json_response({"message": "本地配置或数据目录无法读写。"}, status=503)
@@ -484,6 +508,69 @@ async def toolpack_env(request):
     return web.json_response({"message": "工具专用配置已保存；启用中的工具会自动重新启动。"})
 
 
+async def access_config(request):
+    state = request.app[STATE]
+    rules, revision = state.access_store.read()
+    catalog = {
+        "*": "默认规则（没有更具体规则时使用）",
+        "query_electricity": "查询剩余电量",
+        "electricity_history": "读取电费历史",
+        "electricity_usage": "用电统计",
+        "electricity_chart": "生成曲线访问链接",
+        "create_webpage": "生成并发布网页",
+        "roll_dice": "掷骰子",
+        "draw_lots": "抽签",
+        "load_skill": "加载技能",
+        "read_skill_file": "读取技能参考文件",
+    }
+    for pack in state.tool_manager.store.list():
+        catalog[f"mcp__{pack['name']}__*"] = f"工具包 {pack['name']} 全部函数"
+        for name in pack["exports"]:
+            catalog[f"mcp__{pack['name']}__{name}"] = f"{pack['name']} / {name}"
+    for worker in state.tool_manager.workers.values():
+        for tool in worker.schemas:
+            catalog[f"mcp__{worker.pack.name}__{tool['name']}"] = tool["description"]
+    for name in rules:
+        catalog.setdefault(name, "已保存的自定义规则")
+    return web.json_response(
+        {
+            "rules": rules,
+            "revision": revision,
+            "catalog": [{"name": name, "description": text} for name, text in catalog.items()],
+        }
+    )
+
+
+async def save_access(request):
+    state = request.app[STATE]
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) != {"rules", "revision"}:
+        raise web.HTTPBadRequest(text="权限配置格式错误。")
+    async with state.access_lock:
+        state.access_store.save(payload["rules"], payload["revision"])
+    return web.json_response(
+        {"message": "权限已保存，QQ和网页下一次工具调用立即读取，不需要重启。"}
+    )
+
+
+async def admin_pages(request):
+    state = request.app[STATE]
+    return web.json_response(
+        {
+            "pages": state.portal_store.list_pages(),
+            "public_base_url": state.settings().public_base_url,
+        }
+    )
+
+
+async def admin_retract_page(request):
+    state = request.app[STATE]
+    identifier = request.match_info["identifier"]
+    page = state.portal_store.page(identifier)
+    state.portal_store.retract(page["owner"], identifier)
+    return web.json_response({"message": "网页已撤回，公开路径和旧访问链接失效。"})
+
+
 async def test_qq(state: AdminState) -> dict:
     settings = Settings.from_values(state.config.values())
     async with asyncio.timeout(15):
@@ -580,6 +667,7 @@ def create_admin_app(
         ("/", "index.html", "text/html"),
         ("/admin.js", "admin.js", "text/javascript"),
         ("/toolpacks.js", "toolpacks.js", "text/javascript"),
+        ("/portal-admin.js", "portal-admin.js", "text/javascript"),
         ("/admin.css", "admin.css", "text/css"),
     ):
         content = files("qqbot").joinpath("resources/admin", filename).read_text(encoding="utf-8")
@@ -605,6 +693,10 @@ def create_admin_app(
     app.router.add_post("/api/toolpacks/{name}", toggle_toolpack)
     app.router.add_post("/api/toolpacks/{name}/restart", restart_toolpack)
     app.router.add_post("/api/toolpacks/{name}/env", toolpack_env)
+    app.router.add_get("/api/access", access_config)
+    app.router.add_post("/api/access", save_access)
+    app.router.add_get("/api/pages", admin_pages)
+    app.router.add_post("/api/pages/{identifier}/retract", admin_retract_page)
     app.router.add_post("/api/test/{service}", test_connection)
     return app
 
