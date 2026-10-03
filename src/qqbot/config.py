@@ -57,6 +57,7 @@ class Settings:
     bot_reply_length: str = "balanced"
     bot_group_personas: dict[str, str] = field(default_factory=dict, repr=False)
     memory_enabled: bool = True
+    games_enabled: bool = True
     electricity_history_enabled: bool = True
     electricity_history_retention_days: int = 365
 
@@ -216,6 +217,7 @@ class Settings:
             bot_reply_length=length,
             bot_group_personas=groups,
             memory_enabled=env_bool("MEMORY_ENABLED", True, values=values),
+            games_enabled=env_bool("GAMES_ENABLED", True, values=values),
             electricity_history_enabled=env_bool(
                 "ELECTRICITY_HISTORY_ENABLED", True, values=values
             ),

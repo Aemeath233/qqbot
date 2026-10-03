@@ -1,6 +1,6 @@
 [project]
 name = "qqbot"
-version = "0.4.0"
+version = "0.5.0"
 description = "QQ 群聊与私聊机器人，使用官方 Webhook API"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -8,6 +8,7 @@ import logging
 import secrets
 import sqlite3
 import sys
+import time
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
@@ -20,7 +21,10 @@ from qqbot import __version__
 from qqbot.admin_auth import LoginLimit, PasswordStore, Sessions
 from qqbot.admin_config import ConfigConflict, ConfigStore
 from qqbot.api import QQAPI, QQAPIError
+from qqbot.assistant import BotAssistant
+from qqbot.commands import CommandRouter
 from qqbot.config import ConfigurationError, Settings, env_bool
+from qqbot.electricity import ElectricityClient, ElectricityError
 from qqbot.electricity_probe import (
     ProbeConfig,
     ProbeError,
@@ -29,19 +33,48 @@ from qqbot.electricity_probe import (
     probe,
 )
 from qqbot.llm import ChatCompletionsClient, LLMError
+from qqbot.messages import Message
+from qqbot.user_store import UserDataError, UserStore
 
 logger = logging.getLogger(__name__)
 COOKIE = "qqbot_admin"
+WEB_CONTEXT = json.dumps(["users", "web-admin", "web-admin"])
+
+
+class AdminElectricity(ElectricityClient):
+    def __init__(self, settings, session, gate_path: Path):
+        super().__init__(settings, session)
+        self.gate_path = gate_path
+
+    async def _query(self, dormitory: str, roomverify: str) -> dict:
+        gate = RequestGate(self.gate_path)
+        try:
+            try:
+                gate.reserve()
+            except ProbeError as exc:
+                raise ElectricityError(str(exc), "cooldown") from None
+            try:
+                return await super()._query(dormitory, roomverify)
+            except ElectricityError as exc:
+                if exc.code == "rate_limited":
+                    gate.defer(exc.retry_after_seconds)
+                raise
+        finally:
+            gate.close()
 
 
 class AdminState:
-    def __init__(self, root: Path, *, environ=None, checks=None):
+    def __init__(self, root: Path, *, environ=None, checks=None, assistant_factory=None):
         self.root = root
         self.config = ConfigStore(root / ".env", environ=environ)
         self.password = PasswordStore(root / "data/admin/password.json")
         self.sessions = Sessions()
         self.login_limit = LoginLimit()
         self.save_lock = asyncio.Lock()
+        self.chat_lock = asyncio.Lock()
+        self.assistant = None
+        self.assistant_revision = ""
+        self.assistant_factory = assistant_factory
         self.test_locks = {key: asyncio.Lock() for key in ("qq", "llm", "electricity")}
         self.checks = checks or {"qq": test_qq, "llm": test_llm, "electricity": test_electricity}
         self.session: aiohttp.ClientSession | None = None
@@ -54,6 +87,31 @@ class AdminState:
         if not self.hosts:
             raise ConfigurationError("ADMIN_ALLOWED_HOSTS 不能为空。")
         self.secure_cookie = env_bool("ADMIN_COOKIE_SECURE", values=values)
+
+    def settings(self) -> Settings:
+        settings = Settings.from_values(self.config.values(), require_qq=False)
+        path = settings.db_path if settings.db_path.is_absolute() else self.root / settings.db_path
+        return replace(settings, db_path=path)
+
+    def chat_assistant(self):
+        revision = self.config.revision()
+        if self.assistant is None or revision != self.assistant_revision:
+            settings = self.settings()
+            self.assistant = (
+                self.assistant_factory(settings, self.session)
+                if self.assistant_factory
+                else BotAssistant(
+                    settings,
+                    self.session,
+                    electricity=AdminElectricity(
+                        settings,
+                        self.session,
+                        self.root / "data/electricity-test/cooldown.sqlite3",
+                    ),
+                )
+            )
+            self.assistant_revision = revision
+        return self.assistant
 
 
 STATE = web.AppKey("admin_state", AdminState)
@@ -181,8 +239,27 @@ async def status(request: web.Request):
     state = request.app[STATE]
     values = state.config.values()
     service = "unavailable"
+    counts = {"profiles": 0, "bound_dorms": 0, "queries": 0}
+    modules = []
     try:
-        settings = Settings.from_values(values, require_qq=False)
+        settings = state.settings()
+        data_path = settings.db_path.with_name(
+            f"{settings.db_path.stem}.userdata{settings.db_path.suffix}"
+        )
+        try:
+            counts = UserStore(data_path).summary()
+        except UserDataError:
+            counts = None
+        modules = [
+            {"id": "electricity", "name": "电费查询", "enabled": settings.electricity_enabled},
+            {
+                "id": "history",
+                "name": "历史与用电估算",
+                "enabled": settings.electricity_history_enabled,
+            },
+            {"id": "memory", "name": "昵称与宿舍记忆", "enabled": settings.memory_enabled},
+            {"id": "games", "name": "骰子与抽签", "enabled": settings.games_enabled},
+        ]
         async with state.session.get(
             f"http://127.0.0.1:{settings.port}/healthz",
             timeout=aiohttp.ClientTimeout(total=2),
@@ -202,8 +279,55 @@ async def status(request: web.Request):
             "qq_configured": bool(values.get("QQ_APP_ID") and values.get("QQ_APP_SECRET")),
             "llm_enabled": values.get("LLM_ENABLED", "false").casefold() == "true",
             "electricity_enabled": values.get("ELECTRICITY_ENABLED", "false").casefold() == "true",
+            "counts": counts,
+            "modules": modules,
         }
     )
+
+
+async def chat_message(request: web.Request):
+    state = request.app[STATE]
+    payload = await request.json()
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"message"}
+        or not isinstance(payload["message"], str)
+        or not 1 <= len(payload["message"].strip()) <= 2000
+    ):
+        raise web.HTTPBadRequest(text="请输入1～2000字的文本消息。")
+    if state.chat_lock.locked():
+        raise web.HTTPTooManyRequests(text="上一条消息还在处理，请稍候。")
+    async with state.chat_lock:
+        assistant = state.chat_assistant()
+        text = payload["message"].strip()
+        task = CommandRouter().plan(
+            Message("users", "web-admin", "web", text, time.time() + 3600),
+            llm_enabled=assistant.llm_enabled,
+        )
+        try:
+            async with asyncio.timeout(90):
+                reply = (
+                    task.content
+                    if task.kind == "text"
+                    else await assistant.generate(
+                        task.kind,
+                        task.content,
+                        WEB_CONTEXT,
+                        request_id=secrets.token_urlsafe(16),
+                    )
+                )
+        except TimeoutError:
+            raise web.HTTPGatewayTimeout(text="网页回复超时，请稍后再试。") from None
+    return web.json_response({"reply": reply, "message": "测试完成；未向QQ发送消息。"})
+
+
+async def chat_reset(request: web.Request):
+    state = request.app[STATE]
+    if state.chat_lock.locked():
+        raise web.HTTPTooManyRequests(text="请等待当前消息处理完成。")
+    assistant = state.chat_assistant()
+    assistant.memory.sessions.pop(WEB_CONTEXT, None)
+    return web.json_response({"message": "已重置网页对话上下文，已登记的昵称与宿舍仍保留。"})
 
 
 async def test_qq(state: AdminState) -> dict:
@@ -275,9 +399,13 @@ async def test_connection(request: web.Request):
     return web.json_response(result)
 
 
-def create_admin_app(root: Path, *, environ=None, checks=None) -> web.Application:
+def create_admin_app(
+    root: Path, *, environ=None, checks=None, assistant_factory=None
+) -> web.Application:
     app = web.Application(middlewares=[security], client_max_size=65536)
-    state = AdminState(root.resolve(), environ=environ, checks=checks)
+    state = AdminState(
+        root.resolve(), environ=environ, checks=checks, assistant_factory=assistant_factory
+    )
     if not state.password.path.exists():
         raise ConfigurationError("请先执行 uv run qqbot admin --set-password 设置管理密码。")
     app[STATE] = state
@@ -304,6 +432,8 @@ def create_admin_app(root: Path, *, environ=None, checks=None) -> web.Applicatio
     app.router.add_get("/api/settings", get_settings)
     app.router.add_post("/api/settings", save_settings)
     app.router.add_get("/api/status", status)
+    app.router.add_post("/api/chat", chat_message)
+    app.router.add_post("/api/chat/reset", chat_reset)
     app.router.add_post("/api/test/{service}", test_connection)
     return app
 

@@ -193,3 +193,14 @@ class UserStore:
                 (identity, now - days * 86400, now, meter_key, meter_key, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def summary(self) -> dict:
+        """管理页只读取数量，不枚举用户昵称、OpenID或房间明细。"""
+        if not self.path.exists():
+            return {"profiles": 0, "bound_dorms": 0, "queries": 0}
+        with self.connect() as db:
+            profiles, bound = db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(dormitory!=''),0) FROM profiles"
+            ).fetchone()
+            queries = db.execute("SELECT COUNT(*) FROM electricity_queries").fetchone()[0]
+        return {"profiles": profiles, "bound_dorms": bound, "queries": queries}

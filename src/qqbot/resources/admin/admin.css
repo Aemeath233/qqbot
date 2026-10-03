@@ -79,12 +79,64 @@ input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; width: 15
 .note p { margin-top: 3px; }
 .note-dot { width: 7px; height: 7px; border-radius: 50%; background: #98aca5; margin-top: 7px; flex-shrink: 0; }
 footer { max-width: 1160px; margin: auto; padding: 0 28px 23px; display: flex; gap: 20px; justify-content: space-between; color: #8c999f; font-size: 11px; }
+.dashboard-mode main { max-width: 1440px; padding: 28px 30px 40px; }
+.admin-shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 32px; align-items: start; }
+.sidebar { position: sticky; top: 24px; background: white; border: 1px solid var(--line); border-radius: 14px; padding: 20px 12px; }
+.sidebar-title { display: flex; justify-content: space-between; padding: 0 10px 18px; font-weight: 650; }
+.sidebar nav { display: flex; flex-direction: column; gap: 5px; }
+.sidebar nav button { text-align: left; padding: 11px 14px; color: #637982; background: transparent; }
+.sidebar nav button.active { background: #e7f3ef; color: #176e63; font-weight: 650; }
+.sidebar nav button:hover { background: #eff5f3; }
+.sidebar-note { font-size: 11px; color: var(--muted); margin: 23px 10px 0; line-height: 1.8; }
+.workspace { min-width: 0; }
+.workspace .page-heading h1 { font-size: 27px; }
+.workspace .page-heading { margin-bottom: 22px; }
+.workspace .status-card { padding: 18px 16px; }
+.workspace .status-card strong { font-size: 18px; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0; }
+.summary-grid article { padding: 19px 22px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.summary-grid strong { font-size: 27px; color: var(--accent); }
+.summary-grid .muted { font-size: 12px; }
+.getting-started { padding: 27px; }
+.getting-started h2 { font-size: 19px; margin-bottom: 8px; }
+.getting-started p { font-size: 13px; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 20px; }
+.advanced-settings { margin-top: 25px; border-top: 1px solid var(--line); padding-top: 14px; }
+.advanced-settings summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.advanced-settings .section-fields { margin-top: 20px; }
+.module-list { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+.module-card { padding: 18px 21px; display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.module-enabled { color: var(--accent); }
+.chat-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+.chat-log { height: 340px; overflow: auto; padding: 23px; background: #fcfdfd; }
+.chat-empty { display: grid; place-content: center; height: 100%; text-align: center; font-size: 14px; color: var(--muted); line-height: 2; }
+.chat-bubble { width: fit-content; max-width: 88%; padding: 12px 17px; background: white; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 15px; }
+.chat-bubble.user { margin-left: auto; background: #eaf4f0; border-color: #d2e5dd; }
+.chat-bubble > div { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 5px; font-size: 14px; }
+.chat-examples { margin-top: 12px; gap: 4px; }
+.chat-input { margin-top: 16px; }
+.chat-input textarea { min-height: 95px; background: white; }
+.chat-send { margin-top: 12px; display: flex; justify-content: space-between; gap: 15px; align-items: center; }
+.chat-send .primary { min-width: 95px; }
 @media (max-width: 850px) {
+  .admin-shell { grid-template-columns: 1fr; gap: 22px; }
+  .sidebar { position: static; padding: 10px; }
+  .sidebar-title, .sidebar-note { display: none; }
+  .sidebar nav { flex-direction: row; overflow-x: auto; }
+  .sidebar nav button { flex-shrink: 0; padding: 9px 12px; }
   .login-layout { grid-template-columns: 1fr 1fr; gap: 35px; }
   .status-grid { grid-template-columns: 1fr 1fr; }
   .intro h1 { font-size: 44px; }
 }
 @media (max-width: 640px) {
+  .dashboard-mode main { padding: 20px 15px 30px; }
+  .summary-grid { gap: 8px; }
+  .summary-grid article { padding: 13px; flex-direction: column; align-items: flex-start; }
+  .summary-grid strong { font-size: 23px; }
+  .module-list { grid-template-columns: 1fr; }
+  .chat-log { height: 300px; padding: 15px; }
+  .chat-bubble { max-width: 95%; }
+  .chat-send { align-items: flex-start; }
   .topbar { height: 74px; padding: 0 20px; }
   .local-badge { display: none; }
   main { padding: 26px 18px 35px; }

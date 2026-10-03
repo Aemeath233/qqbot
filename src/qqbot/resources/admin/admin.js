@@ -1,42 +1,56 @@
 "use strict";
 
 const groups = [
-  { id: "personality", title: "人格与个人记忆", wide: true,
+  { id: "personality", page: "personality", title: "人格", wide: true,
     description: "选择说话风格。昵称与宿舍只在用户明确登记后记住；查询台账按用户隔离，统计直接读取本地数据。", fields: [
     ["BOT_NAME", "机器人在对话中的名字", "text", "小电"],
     ["BOT_PERSONA", "默认人格", "select", "", {cat:"猫猫电费管家", friend:"校园损友", gentle:"温柔助手", custom:"自定义人格"}],
     ["BOT_REPLY_LENGTH", "回复长度偏好", "select", "", {short:"简短", balanced:"适中", detailed:"详细"}],
     ["BOT_CATCHPHRASE", "口头禅（可选）", "text", "偶尔使用，不必每句都说"],
     ["BOT_PERSONA_CUSTOM", "自定义人设说明", "textarea", "描述角色背景、语气和说话习惯，最多2000字"],
-    ["BOT_GROUP_PERSONAS", "按群覆盖人格（可选）", "textarea", '{"群标识":"friend"}；在该群发送 /人设 获取标识'],
-    ["MEMORY_ENABLED", "允许主动登记昵称和宿舍", "bool"],
-    ["ELECTRICITY_HISTORY_ENABLED", "保存个人电费查询历史", "bool"],
-    ["ELECTRICITY_HISTORY_RETENTION_DAYS", "历史保留天数", "number", "365"],
+    ["BOT_GROUP_PERSONAS", "按群覆盖人格（可选）", "textarea", '{"群标识":"friend"}；在该群发送 /人设 获取标识', null, true],
   ]},
-  { id: "qq", title: "QQ 机器人", description: "填写 QQ 开放平台的 AppID 与 AppSecret。", test: "测试 QQ 鉴权", fields: [
+  { id: "qq", page: "connect", title: "QQ 机器人", description: "填写 QQ 开放平台的 AppID 与 AppSecret。", test: "测试 QQ 鉴权", fields: [
     ["QQ_APP_ID", "AppID", "text", "机器人应用 ID"],
     ["QQ_APP_SECRET", "AppSecret", "secret", "留空保留已配置的密钥"],
   ]},
-  { id: "llm", title: "AI 模型服务", description: "使用支持 Chat Completions 与函数工具的模型；连接测试会产生一次模型调用。", test: "测试模型连接", fields: [
+  { id: "llm", page: "connect", title: "AI 模型服务", description: "一个兼容服务与一个默认模型；连接测试会产生一次模型调用。", test: "测试模型连接", fields: [
     ["LLM_ENABLED", "启用 AI 聊天", "bool"],
     ["LLM_BASE_URL", "API 地址", "text", "https://你的服务地址/v1"],
     ["LLM_MODEL", "模型名称", "text", "服务商提供的模型名"],
     ["LLM_API_KEY", "API Key", "secret", "留空保留已配置的密钥"],
-    ["LLM_TIMEOUT", "请求超时（秒）", "number", "30"],
+    ["LLM_TIMEOUT", "请求超时（秒）", "number", "30", null, true],
   ]},
-  { id: "electricity", title: "宿舍电费", description: "查询剩余电量。连接测试只请求一次区域列表，不遍历宿舍；两次测试至少间隔 60 秒。", test: "测试电费接口", wide: true, fields: [
+  { id: "electricity", page: "electricity", title: "宿舍电费", description: "查询剩余电量。连接测试只请求一次区域列表，不遍历宿舍；两次测试至少间隔 60 秒。", test: "测试电费接口", wide: true, fields: [
     ["ELECTRICITY_ENABLED", "启用电费查询", "bool"],
     ["ELECTRICITY_DEFAULT_AREA", "默认区域", "text", "留空时按查询结果确认区域"],
-    ["ELECTRICITY_ENDPOINT", "接口地址", "text", "HTTPS 查询地址"],
-    ["ELECTRICITY_MAP_PATH", "宿舍目录路径", "text", "留空使用内置目录"],
-    ["ELECTRICITY_SCHOOL_CODE", "学校代码", "text", "1402"],
-    ["ELECTRICITY_PAY_PROJECT", "缴费项目编号", "number", "953"],
-    ["ELECTRICITY_TOKEN", "会话 Token（可选）", "secret", "当前查询不要求时可留空"],
-    ["ELECTRICITY_COOKIE", "Cookie（可选）", "secret", "当前查询不要求时可留空"],
-    ["ELECTRICITY_TAPP_ID", "应用标识（可选）", "secret", "当前查询不要求时可留空"],
+    ["ELECTRICITY_HISTORY_ENABLED", "保存个人电费查询历史", "bool"],
+    ["ELECTRICITY_HISTORY_RETENTION_DAYS", "历史保留天数", "number", "365"],
+    ["ELECTRICITY_ENDPOINT", "接口地址", "text", "HTTPS 查询地址", null, true],
+    ["ELECTRICITY_MAP_PATH", "宿舍目录路径", "text", "留空使用内置目录", null, true],
+    ["ELECTRICITY_SCHOOL_CODE", "学校代码", "text", "1402", null, true],
+    ["ELECTRICITY_PAY_PROJECT", "缴费项目编号", "number", "953", null, true],
+    ["ELECTRICITY_TOKEN", "会话 Token（可选）", "secret", "当前查询不要求时可留空", null, true],
+    ["ELECTRICITY_COOKIE", "Cookie（可选）", "secret", "当前查询不要求时可留空", null, true],
+    ["ELECTRICITY_TAPP_ID", "应用标识（可选）", "secret", "当前查询不要求时可留空", null, true],
+  ]},
+  { id: "tools", page: "tools", title: "按需开启", wide: true,
+    description: "内置功能以函数模块维护。需要什么就开启什么，日常聊天只使用当前启用的工具。", fields: [
+    ["MEMORY_ENABLED", "允许主动登记昵称和宿舍", "bool"],
+    ["GAMES_ENABLED", "启用骰子与抽签", "bool"],
   ]},
 ];
 const controls = new Map();
+const sections = new Map();
+const pageInfo = {
+  overview: ["概览", "连接状态与本地数据一目了然。"],
+  chat: ["网页聊天", "先用网页验证人格和工具，再到 QQ 里完成真实收发联调。"],
+  connect: ["连接配置", "保存后手动测试鉴权；密钥框留空保留已有值。"],
+  personality: ["人格", "选一个口吻，或写下你自己的角色设定。"],
+  electricity: ["电费", "当前电量、个人台账与用电估算集中配置。"],
+  tools: ["功能开关", "保留日常用得上的功能，按需关闭小互动。"],
+};
+let currentPage = "overview";
 let csrf = "", revision = "", timer = null;
 const el = id => document.getElementById(id);
 
@@ -68,6 +82,7 @@ function showLogin() {
   el("login-panel").hidden = false;
   el("dashboard").hidden = true;
   el("logout").hidden = true;
+  document.body.classList.remove("dashboard-mode");
   for (const control of controls.values()) {
     if (control.type === "secret") control.input.value = "";
   }
@@ -77,6 +92,7 @@ function buildForm() {
   for (const group of groups) {
     const section = document.createElement("section");
     section.className = "card config-section" + (group.wide ? " wide" : "");
+    sections.set(group.id, {element:section, page:group.page});
     const heading = document.createElement("div");
     heading.className = "section-heading";
     const title = document.createElement("h2");
@@ -87,7 +103,11 @@ function buildForm() {
     description.textContent = group.description;
     const fields = document.createElement("div");
     fields.className = "section-fields";
-    for (const [key, label, type, placeholder, options] of group.fields) {
+    const advanced = document.createElement("details"); advanced.className = "advanced-settings";
+    const advancedTitle = document.createElement("summary"); advancedTitle.textContent = "高级设置";
+    const advancedFields = document.createElement("div"); advancedFields.className = "section-fields";
+    advanced.append(advancedTitle, advancedFields);
+    for (const [key, label, type, placeholder, options, isAdvanced] of group.fields) {
       const wrapper = document.createElement("div");
       wrapper.className = "field";
       const labelNode = document.createElement("label");
@@ -125,9 +145,10 @@ function buildForm() {
         wrapper.append(clearLabel);
       }
       controls.set(key, { input, type, badge, clear });
-      fields.append(wrapper);
+      (isAdvanced ? advancedFields : fields).append(wrapper);
     }
     section.append(heading, description, fields);
+    if (advancedFields.childElementCount) section.append(advanced);
     el("config-groups").append(section);
     if (!group.test) continue;
     const row = document.createElement("div"); row.className = "test-row";
@@ -144,6 +165,22 @@ function buildForm() {
       finally { button.disabled = false; }
     });
     row.append(button, output); section.append(row);
+  }
+}
+
+function showPage(page) {
+  if (!pageInfo[page]) return;
+  currentPage = page;
+  el("page-title").textContent = pageInfo[page][0];
+  el("page-description").textContent = pageInfo[page][1];
+  el("overview-panel").hidden = page !== "overview";
+  el("chat-panel").hidden = page !== "chat";
+  el("settings-form").hidden = page === "overview" || page === "chat";
+  el("module-list").hidden = page !== "tools";
+  for (const section of sections.values()) section.element.hidden = section.page !== page;
+  for (const button of document.querySelectorAll(".sidebar [data-page]")) {
+    button.classList.toggle("active", button.dataset.page === page);
+    button.setAttribute("aria-current", button.dataset.page === page ? "page" : "false");
   }
 }
 
@@ -176,12 +213,22 @@ async function refreshStatus() {
       ["electricity-status", data.electricity_enabled, "已启用", "未启用"],
     ]) { el(id).textContent = ok ? yes : no; el(id).classList.toggle("good", ok); }
     el("version").textContent = `· v${data.version}`;
+    for (const [id, key] of [["profile-count","profiles"],["bound-count","bound_dorms"],["query-count","queries"]]) el(id).textContent = data.counts ? data.counts[key] : "暂不可读";
+    el("module-list").replaceChildren();
+    for (const module of data.modules || []) {
+      const item = document.createElement("article"); item.className = "card module-card";
+      const name = document.createElement("strong"); name.textContent = module.name;
+      const status = document.createElement("span"); status.textContent = module.enabled ? "已启用" : "未启用";
+      status.className = module.enabled ? "module-enabled" : "muted";
+      item.append(name,status); el("module-list").append(item);
+    }
   } catch (error) { if (csrf) message("save-message", error.message, true); }
 }
 
 async function loadDashboard() {
   fill(await api("/api/settings"));
   el("login-panel").hidden = true; el("dashboard").hidden = false; el("logout").hidden = false;
+  document.body.classList.add("dashboard-mode"); showPage(currentPage);
   await refreshStatus(); clearInterval(timer); timer = setInterval(refreshStatus, 30000);
 }
 
@@ -220,5 +267,34 @@ el("reload-settings").addEventListener("click", async () => {
   catch (error) { message("save-message", error.message, true); }
 });
 el("refresh-status").addEventListener("click", refreshStatus);
+for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => showPage(button.dataset.page));
+for (const button of document.querySelectorAll("[data-prompt]")) button.addEventListener("click", () => { el("chat-message").value = button.dataset.prompt; el("chat-message").focus(); });
+
+function bubble(role, text) {
+  el("chat-log").querySelector(".chat-empty")?.remove();
+  const item = document.createElement("article"); item.className = "chat-bubble " + role;
+  const label = document.createElement("span"); label.className = "small muted"; label.textContent = role === "user" ? "你" : "机器人";
+  const content = document.createElement("div"); content.textContent = text;
+  item.append(label, content); el("chat-log").append(item);
+  while (el("chat-log").childElementCount > 50) el("chat-log").firstElementChild.remove();
+  el("chat-log").scrollTop = el("chat-log").scrollHeight;
+}
+el("chat-form").addEventListener("submit", async event => {
+  event.preventDefault(); const text = el("chat-message").value.trim();
+  if (!text) return;
+  el("send-chat").disabled = true; el("reset-chat").disabled = true;
+  bubble("user",text); message("chat-status","正在处理，请稍候…");
+  try {
+    const result = await api("/api/chat", {message:text});
+    bubble("assistant",result.reply); el("chat-message").value = "";
+    message("chat-status",result.message);
+  } catch (error) { message("chat-status",error.message,true); }
+  finally { el("send-chat").disabled = false; el("reset-chat").disabled = false; }
+});
+el("chat-message").addEventListener("keydown", event => { if (event.ctrlKey && event.key === "Enter") { event.preventDefault(); if (!el("send-chat").disabled) el("chat-form").requestSubmit(); } });
+el("reset-chat").addEventListener("click", async () => {
+  try { const result = await api("/api/chat/reset", {}); el("chat-log").replaceChildren(); message("chat-status",result.message); }
+  catch (error) { message("chat-status",error.message,true); }
+});
 buildForm();
 loadDashboard().catch(() => showLogin());

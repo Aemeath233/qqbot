@@ -119,6 +119,30 @@ async def test_directory_ambiguity_prevents_network_calls(settings, tmp_path):
         assert len(caught.value.candidates) == 2
 
 
+async def test_429_reports_rate_limit_and_preserves_retry_after(settings):
+    requests = []
+
+    async def handle(request):
+        requests.append(request)
+        return web.Response(
+            status=429, text="private-server-message", headers={"Retry-After": "1800"}
+        )
+
+    app = web.Application()
+    app.router.add_post("/trade", handle)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        client = ElectricityClient(
+            replace(settings, electricity_enabled=True),
+            session,
+            endpoint=str(server.make_url("/trade")),
+        )
+        with pytest.raises(ElectricityError) as caught:
+            await client.query("33#4032")
+    assert caught.value.code == "rate_limited"
+    assert caught.value.retry_after_seconds == 1800
+    assert "private" not in str(caught.value) and len(requests) == 1
+
+
 async def test_disabled_tool_never_contacts_network(settings):
     async with aiohttp.ClientSession() as session:
         client = ElectricityClient(settings, session, endpoint="http://127.0.0.1:1/unreachable")

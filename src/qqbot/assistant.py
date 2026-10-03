@@ -145,8 +145,9 @@ class BotAssistant:
 
     def _registry(self, profile: dict, access: HistoryAccess) -> ToolRegistry:
         registry = ToolRegistry()
-        for tool in game_tools():
-            registry.register(tool)
+        if self.settings.games_enabled:
+            for tool in game_tools():
+                registry.register(tool)
         if self.settings.electricity_enabled and not self.settings.dry_run:
             registry.register(
                 electricity_tool(self.electricity, profile=profile, recorder=access.record)
@@ -164,6 +165,8 @@ class BotAssistant:
         if task_kind == "profile":
             return self._profile_action(payload, conversation_key)
         if task_kind == "game":
+            if not self.settings.games_enabled:
+                return "小游戏尚未启用，管理员可在功能开关中开启。"
             try:
                 params = json.loads(payload)
                 result = (

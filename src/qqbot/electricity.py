@@ -24,10 +24,16 @@ def generate_idserial() -> str:
 
 class ElectricityError(Exception):
     def __init__(
-        self, message: str, code: str = "query_failed", candidates: list[dict] | None = None
+        self,
+        message: str,
+        code: str = "query_failed",
+        candidates: list[dict] | None = None,
+        *,
+        retry_after_seconds: float = 0,
     ):
         self.code = code
         self.candidates = candidates or []
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(message)
 
 
@@ -96,6 +102,14 @@ class ElectricityClient:
                 timeout=aiohttp.ClientTimeout(total=10),
                 allow_redirects=False,
             ) as response:
+                if response.status == 429:
+                    from qqbot.electricity_probe import throttle_delay
+
+                    raise ElectricityError(
+                        "电费接口正在限流，请等待冷却后重试。",
+                        "rate_limited",
+                        retry_after_seconds=throttle_delay(response.headers.get("Retry-After")),
+                    )
                 if response.status in {401, 403}:
                     raise ElectricityError(
                         "电费查询会话失效，请联系管理员检查登录状态。", "auth_failed"
