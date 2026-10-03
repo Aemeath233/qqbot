@@ -119,6 +119,7 @@ class ElectricityClient:
             "unit": "度",
             "queried_at": datetime.now(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S"),
             "cached": False,
+            "_observed_at": time.time(),
         }
 
 
@@ -157,4 +158,5 @@ def format_electricity(result: dict) -> str:
         f"宿舍 {result['dormitory']} 剩余电量：{result['remaining_kwh']} 度{source}\n"
         + (f"区域：{result['area_name']}\n" if result.get("area_name") else "")
         + f"查询时间：{result['queried_at']}（北京时间）"
+        + ("\n" + result["history_warning"] if result.get("history_warning") else "")
     )

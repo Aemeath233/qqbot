@@ -24,6 +24,10 @@ class Message:
     @property
     def conversation_key(self) -> str:
         # 群内按发送者隔离；缺少作者标识时只允许本条消息的上下文。
+        if self.kind == "groups" and not self.sender_id:
+            return json.dumps(
+                [self.kind, self.target_id, "", self.message_id], separators=(",", ":")
+            )
         sender = self.sender_id or (self.target_id if self.kind == "users" else self.message_id)
         return json.dumps([self.kind, self.target_id, sender], separators=(",", ":"))
 
@@ -47,8 +51,14 @@ class Message:
             return None
         message_id = data.get("id")
         kind = "users" if event == "C2C_MESSAGE_CREATE" else "groups"
-        target_id = author.get("user_openid") if kind == "users" else data.get("group_openid")
-        sender_id = author.get("user_openid" if kind == "users" else "member_openid", "")
+        target_id = (
+            (author.get("user_openid") or author.get("id"))
+            if kind == "users"
+            else data.get("group_openid")
+        )
+        sender_id = author.get("user_openid" if kind == "users" else "member_openid") or author.get(
+            "id", ""
+        )
         if not isinstance(sender_id, str) or len(sender_id) > 512:
             sender_id = ""
         if not all(isinstance(v, str) and 0 < len(v) <= 512 for v in (message_id, target_id)):

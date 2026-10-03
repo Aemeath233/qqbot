@@ -1,10 +1,12 @@
 """基础命令；新增业务功能从此处扩展。"""
 
+import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from qqbot import __version__
+from qqbot.interactions import history_request, profile_request
 from qqbot.messages import Message
 
 SHANGHAI = timezone(timedelta(hours=8))
@@ -16,6 +18,11 @@ HELP = (
     "/时间 或 /time：查看北京时间\n"
     "/状态 或 /status：查看服务运行状态\n"
     "/电费 楼号#房号 [区域]：查询剩余电量\n"
+    "/人设：查看当前人格\n"
+    "/昵称 阿明、/绑定宿舍 33#2035 [区域]：主动登记记忆\n"
+    "/我的记忆、/忘记我：查看或清除自己的资料及查询历史\n"
+    "/电费历史 [天数]、/用电统计 [天数] [楼号#房号] [区域]\n"
+    "/掷骰子 [2d6]、/抽签 [选项A|选项B]：小互动\n"
     "/聊天 内容：与 AI 聊天（需管理员启用）\n"
     "启用 AI 后，也可直接说“查一下33号楼2035还剩多少电”。\n"
     "群里先 @机器人，再输入命令；私聊直接输入即可。"
@@ -40,9 +47,61 @@ class CommandRouter:
         parts = text.removeprefix("/").lstrip().split(maxsplit=1)
         command = parts[0].lower() if parts else "help"
         argument = parts[1] if len(parts) == 2 else ""
+        profile_actions = {
+            "昵称": "nickname",
+            "记住昵称": "nickname",
+            "绑定宿舍": "dorm",
+            "记住宿舍": "dorm",
+            "我的记忆": "show",
+            "忘记我": "forget",
+            "解绑宿舍": "unbind",
+            "清除电费历史": "clear_history",
+        }
+        if command in profile_actions:
+            action = profile_actions[command]
+            if action == "nickname" and not argument:
+                action = "show"
+            return ReplyTask(
+                "profile", json.dumps({"action": action, "value": argument}, ensure_ascii=False)
+            )
+        if command in {"人设", "persona"}:
+            return ReplyTask("persona", "")
+        if command in {"掷骰子", "骰子", "dice", "抽签", "draw"}:
+            return ReplyTask(
+                "game",
+                json.dumps(
+                    {
+                        "action": "dice" if command in {"掷骰子", "骰子", "dice"} else "draw",
+                        "value": argument,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        if command in {"电费历史", "用电统计", "history", "usage"}:
+            params = argument.split(maxsplit=2)
+            try:
+                days = int(params[0]) if params else 3
+            except ValueError:
+                return ReplyTask("text", "用法：/用电统计 3 [楼号#房号] [区域]，天数应为1～365。")
+            return ReplyTask(
+                "history" if command in {"电费历史", "history"} else "usage",
+                json.dumps(
+                    {
+                        "days": days,
+                        "dormitory": params[1] if len(params) > 1 else "",
+                        "area": params[2] if len(params) > 2 else "",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        if not message.full_group:
+            request = profile_request(text.removeprefix("/"))
+            if request is not None:
+                return ReplyTask("profile", json.dumps(request, ensure_ascii=False))
+            history = history_request(text)
+            if history is not None:
+                return ReplyTask(history[0], json.dumps({"days": history[1]}))
         if command in {"电费", "electricity"}:
-            if not argument:
-                return ReplyTask("text", "请提供楼号和房号，例如：/电费 33#2035")
             return ReplyTask("electricity", argument)
         if command in {"聊天", "chat"}:
             if not llm_enabled:

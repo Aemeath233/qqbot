@@ -197,7 +197,7 @@ async def test_ack_does_not_wait_for_llm_and_sending_retry_reuses_reply(settings
             self.called = asyncio.Event()
             self.release = asyncio.Event()
 
-        async def generate(self, kind, payload, key):
+        async def generate(self, kind, payload, key, *, request_id=""):
             self.calls += 1
             self.called.set()
             await self.release.wait()

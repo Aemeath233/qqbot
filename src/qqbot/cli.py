@@ -52,12 +52,21 @@ async def query_electricity(settings: Settings, dormitory: str, area: str = ""):
 
 
 async def chat(settings: Settings, prompt: str | None):
-    if not settings.llm_enabled:
-        raise ConfigurationError("请先启用 LLM_ENABLED，并填写模型服务配置")
     async with aiohttp.ClientSession() as session:
         assistant = BotAssistant(settings, session)
+        router = CommandRouter()
+
+        async def respond(text: str):
+            message = Message("users", "local-console", "console", text, time.time() + 3600)
+            task = router.plan(message, llm_enabled=assistant.llm_enabled)
+            return (
+                task.content
+                if task.kind == "text"
+                else await assistant.generate(task.kind, task.content, "local-console")
+            )
+
         if prompt is not None:
-            print(await assistant.generate("chat", prompt, "local-console"))
+            print(await respond(prompt))
             return
         print("AI 对话测试：可输入自然语言；exit 退出。不会给 QQ 用户发送消息。")
         while True:
@@ -67,7 +76,7 @@ async def chat(settings: Settings, prompt: str | None):
                 return
             if text.strip().lower() in {"exit", "quit", "退出"}:
                 return
-            print("机器人：" + await assistant.generate("chat", text, "local-console"))
+            print("机器人：" + await respond(text))
 
 
 def main():

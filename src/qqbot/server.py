@@ -48,7 +48,10 @@ class Runtime:
                     try:
                         async with asyncio.timeout(budget):
                             content = await self.assistant.generate(
-                                job["task_kind"], job["task_payload"], job["conversation_key"]
+                                job["task_kind"],
+                                job["task_payload"],
+                                job["conversation_key"],
+                                request_id=job["key"],
                             )
                     except TimeoutError:
                         content = "查询或 AI 回复超时，请稍后再试。"

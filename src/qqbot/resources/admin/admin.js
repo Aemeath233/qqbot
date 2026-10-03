@@ -1,6 +1,18 @@
 "use strict";
 
 const groups = [
+  { id: "personality", title: "人格与个人记忆", wide: true,
+    description: "选择说话风格。昵称与宿舍只在用户明确登记后记住；查询台账按用户隔离，统计直接读取本地数据。", fields: [
+    ["BOT_NAME", "机器人在对话中的名字", "text", "小电"],
+    ["BOT_PERSONA", "默认人格", "select", "", {cat:"猫猫电费管家", friend:"校园损友", gentle:"温柔助手", custom:"自定义人格"}],
+    ["BOT_REPLY_LENGTH", "回复长度偏好", "select", "", {short:"简短", balanced:"适中", detailed:"详细"}],
+    ["BOT_CATCHPHRASE", "口头禅（可选）", "text", "偶尔使用，不必每句都说"],
+    ["BOT_PERSONA_CUSTOM", "自定义人设说明", "textarea", "描述角色背景、语气和说话习惯，最多2000字"],
+    ["BOT_GROUP_PERSONAS", "按群覆盖人格（可选）", "textarea", '{"群标识":"friend"}；在该群发送 /人设 获取标识'],
+    ["MEMORY_ENABLED", "允许主动登记昵称和宿舍", "bool"],
+    ["ELECTRICITY_HISTORY_ENABLED", "保存个人电费查询历史", "bool"],
+    ["ELECTRICITY_HISTORY_RETENTION_DAYS", "历史保留天数", "number", "365"],
+  ]},
   { id: "qq", title: "QQ 机器人", description: "填写 QQ 开放平台的 AppID 与 AppSecret。", test: "测试 QQ 鉴权", fields: [
     ["QQ_APP_ID", "AppID", "text", "机器人应用 ID"],
     ["QQ_APP_SECRET", "AppSecret", "secret", "留空保留已配置的密钥"],
@@ -75,7 +87,7 @@ function buildForm() {
     description.textContent = group.description;
     const fields = document.createElement("div");
     fields.className = "section-fields";
-    for (const [key, label, type, placeholder] of group.fields) {
+    for (const [key, label, type, placeholder, options] of group.fields) {
       const wrapper = document.createElement("div");
       wrapper.className = "field";
       const labelNode = document.createElement("label");
@@ -83,13 +95,22 @@ function buildForm() {
       labelNode.className = type === "bool" ? "toggle" : "field-heading";
       const labelText = document.createElement("span");
       labelText.textContent = label;
-      const input = document.createElement("input");
+      const input = document.createElement(type === "textarea" ? "textarea" : type === "select" ? "select" : "input");
       input.id = key;
-      input.type = type === "secret" ? "password" : type === "bool" ? "checkbox" : type;
+      if (type !== "select" && type !== "textarea") input.type = type === "secret" ? "password" : type === "bool" ? "checkbox" : type;
+      if (type === "select") {
+        for (const [value, text] of Object.entries(options)) {
+          const option = document.createElement("option"); option.value = value; option.textContent = text; input.append(option);
+        }
+      }
+      if (type === "textarea") { input.rows = 4; input.maxLength = key === "BOT_PERSONA_CUSTOM" ? 2000 : 8000; }
+      if (key === "BOT_NAME") input.maxLength = 32;
+      if (key === "BOT_CATCHPHRASE") input.maxLength = 80;
       input.autocomplete = type === "secret" ? "new-password" : "off";
       if (placeholder) input.placeholder = placeholder;
       if (key === "LLM_TIMEOUT") { input.min = "1"; input.max = "120"; input.step = "any"; }
       if (key === "ELECTRICITY_PAY_PROJECT") input.min = "1";
+      if (key === "ELECTRICITY_HISTORY_RETENTION_DAYS") { input.min = "1"; input.max = "3650"; }
       let badge = null, clear = null;
       if (type === "bool") { labelNode.append(input, labelText); wrapper.append(labelNode); }
       else { labelNode.append(labelText); wrapper.append(labelNode, input); }
@@ -106,6 +127,9 @@ function buildForm() {
       controls.set(key, { input, type, badge, clear });
       fields.append(wrapper);
     }
+    section.append(heading, description, fields);
+    el("config-groups").append(section);
+    if (!group.test) continue;
     const row = document.createElement("div"); row.className = "test-row";
     const button = document.createElement("button"); button.type = "button";
     button.className = "secondary"; button.textContent = group.test;
@@ -119,8 +143,7 @@ function buildForm() {
       } catch (error) { output.textContent = error.message; output.classList.add("error"); }
       finally { button.disabled = false; }
     });
-    row.append(button, output); section.append(heading, description, fields, row);
-    el("config-groups").append(section);
+    row.append(button, output); section.append(row);
   }
 }
 

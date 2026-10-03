@@ -26,6 +26,15 @@ DEFAULTS = {
     "ELECTRICITY_TOKEN": "",
     "ELECTRICITY_COOKIE": "",
     "ELECTRICITY_TAPP_ID": "",
+    "BOT_NAME": "小电",
+    "BOT_PERSONA": "cat",
+    "BOT_PERSONA_CUSTOM": "",
+    "BOT_CATCHPHRASE": "",
+    "BOT_REPLY_LENGTH": "balanced",
+    "BOT_GROUP_PERSONAS": "{}",
+    "MEMORY_ENABLED": "true",
+    "ELECTRICITY_HISTORY_ENABLED": "true",
+    "ELECTRICITY_HISTORY_RETENTION_DAYS": "365",
 }
 SECRET_FIELDS = {
     "QQ_APP_SECRET",
@@ -34,7 +43,13 @@ SECRET_FIELDS = {
     "ELECTRICITY_COOKIE",
     "ELECTRICITY_TAPP_ID",
 }
-BOOL_FIELDS = {"LLM_ENABLED", "ELECTRICITY_ENABLED"}
+BOOL_FIELDS = {
+    "LLM_ENABLED",
+    "ELECTRICITY_ENABLED",
+    "MEMORY_ENABLED",
+    "ELECTRICITY_HISTORY_ENABLED",
+}
+MULTILINE_FIELDS = {"BOT_PERSONA_CUSTOM", "BOT_GROUP_PERSONAS"}
 
 
 class ConfigConflict(Exception):
@@ -96,7 +111,11 @@ class ConfigStore:
                 raise ConfigurationError(f"{key} 由进程环境提供，请在部署环境中修改。")
             if key in BOOL_FIELDS and isinstance(value, bool):
                 value = str(value).lower()
-            if not isinstance(value, str) or len(value) > 16384 or "\n" in value or "\r" in value:
+            if (
+                not isinstance(value, str)
+                or len(value) > 16384
+                or (key not in MULTILINE_FIELDS and ("\n" in value or "\r" in value))
+            ):
                 raise ConfigurationError(f"{key} 不能包含换行或超长内容。")
             value = value.strip()
             if key in SECRET_FIELDS and not value:
