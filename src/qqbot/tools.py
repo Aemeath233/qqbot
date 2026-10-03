@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from qqbot.electricity import ElectricityClient, ElectricityError
 from qqbot.games import GameError, draw_lots, roll_dice
+from qqbot.skills import MAX_FILE, SkillError
 from qqbot.user_store import UserDataError
 
 
@@ -79,7 +80,7 @@ class ToolRegistry:
                 "message": str(exc),
                 "candidates": exc.candidates,
             }
-        except (GameError, UserDataError) as exc:
+        except (GameError, UserDataError, SkillError) as exc:
             return {"ok": False, "message": str(exc)}
 
     @staticmethod
@@ -186,5 +187,36 @@ def history_tools(access) -> list[FunctionTool]:
             "计算当前用户同一电表的余额净变化和条件性耗电估算。必须说明实际覆盖时段；充值、校正或数据不足时不能声称准确耗电。",
             parameters,
             access.usage,
+        ),
+    ]
+
+
+def skill_tools(access) -> list[FunctionTool]:
+    return [
+        FunctionTool(
+            "load_skill",
+            "按名称读取已启用文档技能的说明与资源目录；不执行任何脚本。",
+            {
+                "type": "object",
+                "properties": {"name": {"type": "string", "maxLength": 64}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            access.load,
+        ),
+        FunctionTool(
+            "read_skill_file",
+            "先加载技能，再分段读取其目录内的UTF-8参考文件；不能访问其他路径或执行代码。",
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "maxLength": 64},
+                    "path": {"type": "string", "maxLength": 128},
+                    "offset": {"type": "integer", "minimum": 0, "maximum": MAX_FILE},
+                },
+                "required": ["name", "path"],
+                "additionalProperties": False,
+            },
+            access.read_reference,
         ),
     ]

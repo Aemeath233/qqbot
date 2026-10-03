@@ -23,6 +23,7 @@ HELP = (
     "/我的记忆、/忘记我：查看或清除自己的资料及查询历史\n"
     "/电费历史 [天数]、/用电统计 [天数] [楼号#房号] [区域]\n"
     "/掷骰子 [2d6]、/抽签 [选项A|选项B]：小互动\n"
+    "/技能列表、/技能 名称 任务：查看或使用已启用的文档技能\n"
     "/聊天 内容：与 AI 聊天（需管理员启用）\n"
     "启用 AI 后，也可直接说“查一下33号楼2035还剩多少电”。\n"
     "群里先 @机器人，再输入命令；私聊直接输入即可。"
@@ -47,6 +48,16 @@ class CommandRouter:
         parts = text.removeprefix("/").lstrip().split(maxsplit=1)
         command = parts[0].lower() if parts else "help"
         argument = parts[1] if len(parts) == 2 else ""
+        if command in {"技能列表", "skills"}:
+            return ReplyTask("skill_list", "")
+        if command in {"技能", "skill"}:
+            selection = argument.split(maxsplit=1)
+            if len(selection) != 2:
+                return ReplyTask("text", "用法：/技能 技能名称 你想完成的任务。")
+            return ReplyTask(
+                "skill",
+                json.dumps({"name": selection[0], "input": selection[1]}, ensure_ascii=False),
+            )
         profile_actions = {
             "昵称": "nickname",
             "记住昵称": "nickname",

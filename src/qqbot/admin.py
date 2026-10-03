@@ -34,6 +34,7 @@ from qqbot.electricity_probe import (
 )
 from qqbot.llm import ChatCompletionsClient, LLMError
 from qqbot.messages import Message
+from qqbot.skills import MAX_UPLOAD, SkillError, SkillStore
 from qqbot.user_store import UserDataError, UserStore
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ class AdminState:
         self.login_limit = LoginLimit()
         self.save_lock = asyncio.Lock()
         self.chat_lock = asyncio.Lock()
+        self.skill_lock = asyncio.Lock()
         self.assistant = None
         self.assistant_revision = ""
         self.assistant_factory = assistant_factory
@@ -91,7 +93,12 @@ class AdminState:
     def settings(self) -> Settings:
         settings = Settings.from_values(self.config.values(), require_qq=False)
         path = settings.db_path if settings.db_path.is_absolute() else self.root / settings.db_path
-        return replace(settings, db_path=path)
+        skills_dir = (
+            settings.skills_dir
+            if settings.skills_dir.is_absolute()
+            else self.root / settings.skills_dir
+        )
+        return replace(settings, db_path=path, skills_dir=skills_dir)
 
     def chat_assistant(self):
         revision = self.config.revision()
@@ -155,7 +162,7 @@ async def security(request: web.Request, handler):
         response = web.json_response({"message": exc.text}, status=exc.status)
     except ConfigConflict as exc:
         response = web.json_response({"message": str(exc)}, status=409)
-    except (ConfigurationError, ProbeError) as exc:
+    except (ConfigurationError, ProbeError, SkillError) as exc:
         response = web.json_response({"message": str(exc)}, status=400)
     except (OSError, sqlite3.Error):
         response = web.json_response({"message": "本地配置或数据目录无法读写。"}, status=503)
@@ -259,6 +266,7 @@ async def status(request: web.Request):
             },
             {"id": "memory", "name": "昵称与宿舍记忆", "enabled": settings.memory_enabled},
             {"id": "games", "name": "骰子与抽签", "enabled": settings.games_enabled},
+            {"id": "skills", "name": "文档技能", "enabled": settings.skills_enabled},
         ]
         async with state.session.get(
             f"http://127.0.0.1:{settings.port}/healthz",
@@ -328,6 +336,51 @@ async def chat_reset(request: web.Request):
     assistant = state.chat_assistant()
     assistant.memory.sessions.pop(WEB_CONTEXT, None)
     return web.json_response({"message": "已重置网页对话上下文，已登记的昵称与宿舍仍保留。"})
+
+
+def admin_skills(request: web.Request) -> SkillStore:
+    return SkillStore(request.app[STATE].settings().skills_dir)
+
+
+async def list_skills(request: web.Request):
+    return web.json_response({"skills": admin_skills(request).list(), "mode": "documentation-only"})
+
+
+async def upload_skill(request: web.Request):
+    state = request.app[STATE]
+    if not request.content_type.startswith("multipart/"):
+        raise web.HTTPBadRequest(text="请通过文件上传选择 Markdown 或 ZIP。")
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or part.name != "file" or not part.filename:
+        raise web.HTTPBadRequest(text="请选择技能文件。")
+    data = bytearray()
+    while chunk := await part.read_chunk():
+        data.extend(chunk)
+        if len(data) > MAX_UPLOAD:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_UPLOAD, actual_size=len(data))
+    if await reader.next() is not None:
+        raise web.HTTPBadRequest(text="每次只上传一个技能包。")
+    async with state.skill_lock:
+        item = await asyncio.to_thread(admin_skills(request).install, part.filename, bytes(data))
+    return web.json_response({"skill": item, "message": "技能已导入并保持停用；查看说明后可启用。"})
+
+
+async def view_skill(request: web.Request):
+    store = admin_skills(request)
+    name = request.match_info["name"]
+    if name not in {item["name"] for item in store.list()}:
+        raise web.HTTPNotFound(text="技能不存在。")
+    return web.json_response({"name": name, "content": store.read(name)})
+
+
+async def toggle_skill(request: web.Request):
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) != {"enabled"}:
+        raise web.HTTPBadRequest(text="启停请求格式错误。")
+    async with request.app[STATE].skill_lock:
+        admin_skills(request).set_enabled(request.match_info["name"], payload["enabled"])
+    return web.json_response({"message": "技能状态已更新，下一条模型请求生效。"})
 
 
 async def test_qq(state: AdminState) -> dict:
@@ -402,7 +455,7 @@ async def test_connection(request: web.Request):
 def create_admin_app(
     root: Path, *, environ=None, checks=None, assistant_factory=None
 ) -> web.Application:
-    app = web.Application(middlewares=[security], client_max_size=65536)
+    app = web.Application(middlewares=[security], client_max_size=MAX_UPLOAD + 65536)
     state = AdminState(
         root.resolve(), environ=environ, checks=checks, assistant_factory=assistant_factory
     )
@@ -434,6 +487,10 @@ def create_admin_app(
     app.router.add_get("/api/status", status)
     app.router.add_post("/api/chat", chat_message)
     app.router.add_post("/api/chat/reset", chat_reset)
+    app.router.add_get("/api/skills", list_skills)
+    app.router.add_post("/api/skills/upload", upload_skill)
+    app.router.add_get("/api/skills/{name}", view_skill)
+    app.router.add_post("/api/skills/{name}", toggle_skill)
     app.router.add_post("/api/test/{service}", test_connection)
     return app
 

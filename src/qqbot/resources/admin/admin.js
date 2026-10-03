@@ -38,6 +38,7 @@ const groups = [
     description: "内置功能以函数模块维护。需要什么就开启什么，日常聊天只使用当前启用的工具。", fields: [
     ["MEMORY_ENABLED", "允许主动登记昵称和宿舍", "bool"],
     ["GAMES_ENABLED", "启用骰子与抽签", "bool"],
+    ["SKILLS_ENABLED", "启用文档技能", "bool"],
   ]},
 ];
 const controls = new Map();
@@ -49,6 +50,7 @@ const pageInfo = {
   personality: ["人格", "选一个口吻，或写下你自己的角色设定。"],
   electricity: ["电费", "当前电量、个人台账与用电估算集中配置。"],
   tools: ["功能开关", "保留日常用得上的功能，按需关闭小互动。"],
+  skills: ["技能", "按通用 Agent Skills 结构导入与管理，使用现有工具完成任务。"],
 };
 let currentPage = "overview";
 let csrf = "", revision = "", timer = null;
@@ -63,9 +65,9 @@ async function api(path, payload) {
   const options = { credentials: "same-origin", headers: {} };
   if (payload !== undefined) {
     options.method = "POST";
-    options.headers["Content-Type"] = "application/json";
     if (csrf) options.headers["X-CSRF-Token"] = csrf;
-    options.body = JSON.stringify(payload);
+    if (payload instanceof FormData) options.body = payload;
+    else { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(payload); }
   }
   const response = await fetch(path, options);
   const data = await response.json();
@@ -175,7 +177,8 @@ function showPage(page) {
   el("page-description").textContent = pageInfo[page][1];
   el("overview-panel").hidden = page !== "overview";
   el("chat-panel").hidden = page !== "chat";
-  el("settings-form").hidden = page === "overview" || page === "chat";
+  el("skills-panel").hidden = page !== "skills";
+  el("settings-form").hidden = page === "overview" || page === "chat" || page === "skills";
   el("module-list").hidden = page !== "tools";
   for (const section of sections.values()) section.element.hidden = section.page !== page;
   for (const button of document.querySelectorAll(".sidebar [data-page]")) {
@@ -199,6 +202,44 @@ function fill(data) {
     else control.input.value = data.values[key] || "";
   }
 }
+
+async function refreshSkills() {
+  const data = await api("/api/skills"); el("skills-list").replaceChildren();
+  if (!data.skills.length) {
+    const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "尚未导入技能。上传后可以查看说明并启用。"; el("skills-list").append(empty);
+  }
+  for (const skill of data.skills) {
+    const card = document.createElement("article"); card.className = "card skill-card";
+    const title = document.createElement("strong"); title.textContent = skill.name;
+    const status = document.createElement("span"); status.className = skill.enabled ? "module-enabled" : "muted"; status.textContent = skill.enabled ? "已启用" : "停用";
+    const heading = document.createElement("div"); heading.className = "section-heading"; heading.append(title,status);
+    const description = document.createElement("p"); description.textContent = skill.description; description.className = "small muted";
+    const actions = document.createElement("div"); actions.className = "quick-actions";
+    const view = document.createElement("button"); view.type = "button"; view.className = "secondary"; view.textContent = "查看说明";
+    view.addEventListener("click", async () => {
+      try { const detail = await api(`/api/skills/${encodeURIComponent(skill.name)}`); el("skill-detail").hidden = false; el("skill-detail-title").textContent = detail.name; el("skill-content").textContent = detail.content; }
+      catch (error) { message("skill-message",error.message,true); }
+    });
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "secondary"; toggle.textContent = skill.enabled ? "停用" : "启用";
+    toggle.addEventListener("click", async () => {
+      toggle.disabled = true;
+      try { const result = await api(`/api/skills/${encodeURIComponent(skill.name)}`, {enabled:!skill.enabled}); message("skill-message",result.message); await refreshSkills(); }
+      catch (error) { message("skill-message",error.message,true); toggle.disabled = false; }
+    });
+    actions.append(view,toggle); card.append(heading,description);
+    for (const warning of skill.warnings || []) { const note = document.createElement("p"); note.className = "small muted"; note.textContent = warning; card.append(note); }
+    card.append(actions); el("skills-list").append(card);
+  }
+}
+
+el("skill-upload-form").addEventListener("submit", async event => {
+  event.preventDefault(); const file = el("skill-file").files[0]; if (!file) return;
+  if (file.size > 1024 * 1024) { message("skill-message","技能文件不能超过1 MiB。",true); return; }
+  const form = new FormData(); form.append("file",file); el("upload-skill").disabled = true;
+  try { const result = await api("/api/skills/upload",form); message("skill-message",result.message); el("skill-file").value = ""; await refreshSkills(); }
+  catch (error) { message("skill-message",error.message,true); }
+  finally { el("upload-skill").disabled = false; }
+});
 
 async function refreshStatus() {
   try {
@@ -229,6 +270,7 @@ async function loadDashboard() {
   fill(await api("/api/settings"));
   el("login-panel").hidden = true; el("dashboard").hidden = false; el("logout").hidden = false;
   document.body.classList.add("dashboard-mode"); showPage(currentPage);
+  if (currentPage === "skills") await refreshSkills();
   await refreshStatus(); clearInterval(timer); timer = setInterval(refreshStatus, 30000);
 }
 
@@ -267,7 +309,7 @@ el("reload-settings").addEventListener("click", async () => {
   catch (error) { message("save-message", error.message, true); }
 });
 el("refresh-status").addEventListener("click", refreshStatus);
-for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => showPage(button.dataset.page));
+for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => { showPage(button.dataset.page); if (button.dataset.page === "skills") refreshSkills().catch(error => message("skill-message",error.message,true)); });
 for (const button of document.querySelectorAll("[data-prompt]")) button.addEventListener("click", () => { el("chat-message").value = button.dataset.prompt; el("chat-message").focus(); });
 
 function bubble(role, text) {

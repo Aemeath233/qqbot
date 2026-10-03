@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from conftest import event_payload
 
@@ -38,6 +40,25 @@ def test_group_normalization_and_full_mode():
     assert router.reply(Message.from_payload(payload, accept_full_group=True)).startswith("pong")
     payload["d"]["content"] = "/不存在"
     assert router.reply(Message.from_payload(payload, accept_full_group=True)) is None
+
+
+def test_skill_commands_preserve_user_task_and_support_full_group():
+    router = CommandRouter()
+    assert (
+        router.plan(Message.from_payload(event_payload(content="/技能列表"))).kind == "skill_list"
+    )
+    assert (
+        "用法" in router.plan(Message.from_payload(event_payload(content="/技能 dinner"))).content
+    )
+    msg = Message.from_payload(
+        event_payload(group=True, full=True, content="/技能 dinner 帮我 选饭"),
+        accept_full_group=True,
+    )
+    task = router.plan(msg, llm_enabled=True)
+    assert task.kind == "skill" and json.loads(task.content) == {
+        "name": "dinner",
+        "input": "帮我 选饭",
+    }
 
 
 def test_ignore_bot_and_nontext_messages():

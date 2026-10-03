@@ -9,7 +9,12 @@ from qqbot.config import Settings
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings("test-app", "test-secret", db_path=tmp_path / "inbox.sqlite3")
+    return Settings(
+        "test-app",
+        "test-secret",
+        db_path=tmp_path / "inbox.sqlite3",
+        skills_dir=tmp_path / "skills",
+    )
 
 
 def event_payload(*, group=False, full=False, content="/ping", message_id="msg-1"):

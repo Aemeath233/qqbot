@@ -58,6 +58,8 @@ class Settings:
     bot_group_personas: dict[str, str] = field(default_factory=dict, repr=False)
     memory_enabled: bool = True
     games_enabled: bool = True
+    skills_enabled: bool = True
+    skills_dir: Path = Path("data/skills")
     electricity_history_enabled: bool = True
     electricity_history_retention_days: int = 365
 
@@ -218,6 +220,8 @@ class Settings:
             bot_group_personas=groups,
             memory_enabled=env_bool("MEMORY_ENABLED", True, values=values),
             games_enabled=env_bool("GAMES_ENABLED", True, values=values),
+            skills_enabled=env_bool("SKILLS_ENABLED", True, values=values),
+            skills_dir=Path(values.get("SKILLS_DIR", "data/skills")),
             electricity_history_enabled=env_bool(
                 "ELECTRICITY_HISTORY_ENABLED", True, values=values
             ),

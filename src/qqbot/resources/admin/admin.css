@@ -118,6 +118,13 @@ footer { max-width: 1160px; margin: auto; padding: 0 28px 23px; display: flex; g
 .chat-input textarea { min-height: 95px; background: white; }
 .chat-send { margin-top: 12px; display: flex; justify-content: space-between; gap: 15px; align-items: center; }
 .chat-send .primary { min-width: 95px; }
+.skill-upload, .skill-card, .skill-detail { padding: 24px; }
+.skill-upload h2 { margin-bottom: 10px; font-size: 20px; }
+.skill-upload form { margin-top: 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.skill-upload input[type="file"] { width: auto; max-width: 100%; }
+.skills-list { display: grid; gap: 15px; margin: 22px 0; }
+.skill-card p { margin-top: 10px; overflow-wrap: anywhere; }
+.skill-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 "Segoe UI", "Microsoft YaHei", sans-serif; color: #4c636c; }
 @media (max-width: 850px) {
   .admin-shell { grid-template-columns: 1fr; gap: 22px; }
   .sidebar { position: static; padding: 10px; }

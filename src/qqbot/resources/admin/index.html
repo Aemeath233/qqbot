@@ -41,6 +41,7 @@
           <button type="button" data-page="personality">人格</button>
           <button type="button" data-page="electricity">电费</button>
           <button type="button" data-page="tools">功能开关</button>
+          <button type="button" data-page="skills">技能</button>
         </nav>
         <p class="sidebar-note">QQ 官方接入<br>一个模型服务<br>按需启用内置功能</p>
       </aside>
@@ -67,6 +68,14 @@
         <div class="quick-actions chat-examples"><button type="button" data-prompt="/人设" class="quiet">查看人格</button><button type="button" data-prompt="/掷骰子 2d6" class="quiet">掷骰子</button><button type="button" data-prompt="/我的记忆" class="quiet">我的记忆</button><button type="button" data-prompt="我最近三天用了多少电？" class="quiet">用电统计</button></div>
         <form id="chat-form" class="chat-input"><label for="chat-message">发一条测试消息</label><textarea id="chat-message" maxlength="2000" rows="3" placeholder="输入消息或命令，Ctrl+Enter 发送" required></textarea><div class="chat-send"><span class="small muted">模型对话会调用已配置服务；电费请求沿用60秒冷却。</span><button id="send-chat" type="submit" class="primary">发送</button></div></form>
         <p id="chat-status" class="message" role="status"></p>
+      </section>
+      <section id="skills-panel" hidden>
+        <div class="card skill-upload"><h2>导入 Agent Skill</h2><p class="muted small">支持 Markdown 或单技能 ZIP，最大1 MiB。正文按需加载，脚本不执行。自然语言调用需要支持函数工具的模型。请把密钥留在连接配置里。</p>
+          <form id="skill-upload-form"><label for="skill-file">选择技能文件</label><input id="skill-file" type="file" accept=".md,.zip" required><button id="upload-skill" type="submit" class="primary">上传技能</button></form>
+          <p id="skill-message" class="message" role="status"></p>
+        </div>
+        <div id="skills-list" class="skills-list"></div>
+        <div id="skill-detail" class="card skill-detail" hidden><h2 id="skill-detail-title">技能说明</h2><pre id="skill-content"></pre></div>
       </section>
       <form id="settings-form" hidden novalidate>
         <div id="config-groups" class="config-grid"></div>
