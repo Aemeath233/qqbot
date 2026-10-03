@@ -1,6 +1,8 @@
 """LLM 可调用的函数白名单；参数验证后才执行 Python 函数。"""
 
 import json
+import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -14,6 +16,40 @@ from qqbot.games import GameError, draw_lots, roll_dice
 from qqbot.portal_store import PortalError
 from qqbot.skills import MAX_FILE, SkillError
 from qqbot.user_store import UserDataError
+
+logger = logging.getLogger(__name__)
+
+
+def bounded_arguments(raw: str):
+    # 在解码前限制嵌套；HTML字符串里的括号和转义不计入结构深度。
+    depth, quoted, escaped = 0, False, False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            depth += 1
+            if depth > 32:
+                raise ValueError("Arguments too deeply nested")
+        elif char in "]}":
+            depth -= 1
+    values = json.loads(raw, parse_constant=invalid_json_constant)
+    pending = [values]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Non-finite JSON number")
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return values
 
 
 @dataclass(frozen=True)
@@ -98,8 +134,8 @@ class ToolRegistry:
         if not isinstance(arguments, str) or len(arguments) > self._tools[name].arguments_limit:
             return self._invalid()
         try:
-            values = json.loads(arguments, parse_constant=invalid_json_constant)
-        except (ValueError, UnicodeError):
+            values = bounded_arguments(arguments)
+        except (ValueError, UnicodeError, RecursionError):
             return self._invalid()
         tool = self._tools[name]
         if tool.full_schema:
@@ -113,6 +149,8 @@ class ToolRegistry:
                 return await tool.handler(**values) if isinstance(values, dict) else self._invalid()
             except (PortalError, UserDataError) as exc:
                 return {"ok": False, "message": str(exc)}
+            except Exception as exc:
+                return self._failed(exc)
         properties = tool.parameters.get("properties", {})
         if (
             not isinstance(values, dict)
@@ -145,6 +183,17 @@ class ToolRegistry:
             }
         except (GameError, UserDataError, SkillError) as exc:
             return {"ok": False, "message": str(exc)}
+        except Exception as exc:
+            return self._failed(exc)
+
+    @staticmethod
+    def _failed(exc) -> dict:
+        logger.warning("工具处理异常：%s", type(exc).__name__)
+        return {
+            "ok": False,
+            "error": "tool_failed",
+            "message": "工具处理失败，执行结果无法确认；本次未自动重试，请先核对实际状态。",
+        }
 
     @staticmethod
     def _invalid() -> dict:

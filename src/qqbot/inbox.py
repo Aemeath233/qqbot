@@ -7,6 +7,11 @@ from pathlib import Path
 from qqbot.commands import ReplyTask
 from qqbot.messages import Message
 
+INTERRUPTED_REPLY = (
+    "上次请求处理被中断，执行结果无法确认。为避免重复操作，本次未重新执行。"
+    "请先核对实际状态；如需继续，请发送新消息。"
+)
+
 
 class InboxFull(Exception):
     pass
@@ -40,9 +45,22 @@ class Inbox:
             "task_payload": "TEXT NOT NULL DEFAULT ''",
             "conversation_key": "TEXT NOT NULL DEFAULT ''",
             "prepared": "INTEGER NOT NULL DEFAULT 1",
+            "generation_started": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE replies ADD COLUMN {name} {definition}")
+        if "generation_started" not in columns:
+            # 升级前的未完成生成没有执行记录，不能假定包内函数尚未产生副作用。
+            self.db.execute(
+                "UPDATE replies SET generation_started=1 WHERE state='pending' AND prepared=0"
+            )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS replies_conversation "
+            "ON replies(conversation_key,state,created_at)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS replies_target ON replies(kind,target_id,state)"
+        )
         self.db.commit()
 
     def add(
@@ -63,6 +81,24 @@ class Inbox:
             ):
                 return False
             if self.pending_count() >= 1000:
+                raise InboxFull
+            if (
+                self.db.execute(
+                    "SELECT COUNT(*) FROM replies WHERE state='pending' AND conversation_key=?",
+                    (message.conversation_key,),
+                ).fetchone()[0]
+                >= 8
+            ):
+                raise InboxFull
+            if (
+                message.kind == "groups"
+                and self.db.execute(
+                    "SELECT COUNT(*) FROM replies WHERE state='pending' "
+                    "AND kind='groups' AND target_id=?",
+                    (message.target_id,),
+                ).fetchone()[0]
+                >= 32
+            ):
                 raise InboxFull
             self.db.execute(
                 """INSERT INTO replies
@@ -98,17 +134,40 @@ class Inbox:
                 "UPDATE replies SET content = ?, prepared = 1 WHERE key = ?", (content, key)
             )
 
-    def next(self):
+    def start_generation(self, key: str):
+        # 必须在任何模型/函数调用之前提交，停机后不重放已经开始的操作。
+        with self.db:
+            self.db.execute("UPDATE replies SET generation_started=1 WHERE key=?", (key,))
+
+    def next(self, *, excluded_contexts=(), prepared: bool | None = None):
         now = time.time()
         with self.db:
             self.db.execute(
                 "UPDATE replies SET state = 'expired' WHERE state = 'pending' AND expires_at <= ?",
                 (now,),
             )
+        conditions = ["r.state='pending'", "r.next_try_at<=?"]
+        parameters = [now]
+        if excluded_contexts:
+            conditions.append(
+                "r.conversation_key NOT IN (" + ",".join("?" for _ in excluded_contexts) + ")"
+            )
+            parameters.extend(excluded_contexts)
+        if prepared is not None:
+            conditions.append("r.prepared=?")
+            parameters.append(int(prepared))
+        # 同一会话的后续任务不能越过正在运行或等待发送重试的前一条。
+        conditions.append("""NOT EXISTS (
+            SELECT 1 FROM replies older WHERE older.state='pending'
+            AND older.conversation_key=r.conversation_key
+            AND (older.created_at<r.created_at OR
+                 (older.created_at=r.created_at AND older.rowid<r.rowid))
+        )""")
         return self.db.execute(
-            """SELECT * FROM replies WHERE state = 'pending' AND next_try_at <= ?
-               ORDER BY created_at LIMIT 1""",
-            (now,),
+            "SELECT r.* FROM replies r WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY r.created_at,r.rowid LIMIT 1",
+            parameters,
         ).fetchone()
 
     def done(self, key: str):

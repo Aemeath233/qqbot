@@ -49,6 +49,7 @@ class ProbeConfig:
     token: str = field(default="", repr=False)
     cookie: str = field(default="", repr=False)
     tapp_id: str = field(default="", repr=False)
+    cooldown_path: Path | None = None
 
     @classmethod
     def load(cls):
@@ -74,6 +75,9 @@ class ProbeConfig:
             Path(map_path) if map_path else None,
             os.getenv("ELECTRICITY_DEFAULT_AREA", "").strip(),
             *credentials,
+            cooldown_path=Path(
+                os.getenv("ELECTRICITY_COOLDOWN_PATH", "data/electricity-test/cooldown.sqlite3")
+            ),
         )
 
 
@@ -156,10 +160,14 @@ class RequestGate:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, timeout=2)
-        self.db.execute(
-            "CREATE TABLE IF NOT EXISTS cooldown "
-            "(id INTEGER PRIMARY KEY CHECK(id=1), next_allowed REAL NOT NULL)"
-        )
+        try:
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS cooldown "
+                "(id INTEGER PRIMARY KEY CHECK(id=1), next_allowed REAL NOT NULL)"
+            )
+        except BaseException:
+            self.db.close()
+            raise
 
     def reserve(self, now: float | None = None):
         now = time.time() if now is None else now
@@ -402,7 +410,7 @@ def main():
         if args.dry_run:
             print("配置检查完成；本次发送 0 个请求。实际运行最多 1 个请求，无重试。")
             return
-        gate = RequestGate(DATA_DIR / "cooldown.sqlite3")
+        gate = RequestGate(config.cooldown_path or DATA_DIR / "cooldown.sqlite3")
         gate.reserve()
         print("开始一次只读请求，超时 12 秒；两次请求开始时间至少间隔 60 秒。")
         result = asyncio.run(run_probe(plan))

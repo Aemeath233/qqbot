@@ -14,7 +14,7 @@ from qqbot.api import QQAPI, DryRunAPI, QQAPIError
 from qqbot.assistant import BotAssistant
 from qqbot.commands import CommandRouter
 from qqbot.config import Settings
-from qqbot.inbox import Inbox, InboxFull
+from qqbot.inbox import INTERRUPTED_REPLY, Inbox, InboxFull
 from qqbot.messages import Message
 from qqbot.public_portal import register_portal
 from qqbot.signing import WebhookSigner
@@ -33,33 +33,64 @@ class Runtime:
         self.inbox = Inbox(settings.db_path)
         self.wakeup = asyncio.Event()
         self.worker: asyncio.Task | None = None
+        self.active: dict[str, tuple[str, bool, asyncio.Task]] = {}
 
     async def work(self):
-        while True:
-            self.wakeup.clear()
-            job = self.inbox.next()
-            if job is None:
+        try:
+            while True:
+                self.wakeup.clear()
+                # 已准备的回复预留两个发送位置；最多四条生成并行，按会话串行。
+                for prepared, limit in ((True, 2), (False, 4)):
+                    while sum(item[1] == prepared for item in self.active.values()) < limit:
+                        contexts = [item[0] for item in self.active.values()]
+                        job = self.inbox.next(excluded_contexts=contexts, prepared=prepared)
+                        if job is None:
+                            break
+                        task = asyncio.create_task(self.process(job), name="qqbot-reply")
+                        self.active[job["key"]] = (job["conversation_key"], prepared, task)
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.wakeup.wait(), timeout=0.5)
-                continue
+        finally:
+            tasks = [item[2] for item in self.active.values()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def process(self, job):
+        try:
             try:
+                if time.time() >= job["expires_at"]:
+                    self.inbox.failed(job["key"], job["attempts"], retry=False)
+                    return
                 content = job["content"]
                 if not job["prepared"]:
-                    budget = max(0.1, min(90, job["expires_at"] - time.time()))
-                    try:
-                        async with asyncio.timeout(budget):
-                            content = await self.assistant.generate(
-                                job["task_kind"],
-                                job["task_payload"],
-                                job["conversation_key"],
-                                request_id=job["key"],
+                    if job["generation_started"]:
+                        content = INTERRUPTED_REPLY
+                    else:
+                        self.inbox.start_generation(job["key"])
+                        budget = max(0.1, min(90, job["expires_at"] - time.time()))
+                        try:
+                            async with asyncio.timeout(budget):
+                                content = await self.assistant.generate(
+                                    job["task_kind"],
+                                    job["task_payload"],
+                                    job["conversation_key"],
+                                    request_id=job["key"],
+                                )
+                        except TimeoutError:
+                            content = (
+                                "处理超时，执行结果可能未知；本次不会自动重试，请先核对实际状态。"
                             )
-                    except TimeoutError:
-                        content = "查询或 AI 回复超时，请稍后再试。"
+                        except Exception as exc:
+                            logger.warning("单条消息处理异常：%s", type(exc).__name__)
+                            content = (
+                                "这条消息处理失败，执行结果无法确认；本次未自动重试。"
+                                "请先核对实际状态，其他消息仍可正常处理。"
+                            )
                     self.inbox.save_content(job["key"], content)
                 if time.time() >= job["expires_at"]:
                     self.inbox.failed(job["key"], job["attempts"], retry=False)
-                    continue
+                    return
                 await self.api.send_text(job["kind"], job["target_id"], job["message_id"], content)
             except (QQAPIError, aiohttp.ClientError, TimeoutError) as exc:
                 attempts = job["attempts"] + 1
@@ -74,6 +105,13 @@ class Runtime:
                 self.inbox.done(job["key"])
                 self.router.sent_count += 1
                 logger.info("已回复一条 %s 消息", job["kind"])
+        except Exception as exc:
+            # 不把未知的生成/发送错误当成可重试操作，不暴露异常原文中的凭证。
+            logger.error("后台任务异常：%s", type(exc).__name__)
+            self.inbox.failed(job["key"], job["attempts"] + 1, retry=False)
+        finally:
+            self.active.pop(job["key"], None)
+            self.wakeup.set()
 
 
 RUNTIME = web.AppKey("runtime", Runtime)
@@ -104,7 +142,7 @@ async def webhook(request: web.Request):
         raise web.HTTPUnauthorized(text="Invalid signature")
     try:
         payload = json.loads(body)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         raise web.HTTPBadRequest(text="Invalid JSON") from None
     if not isinstance(payload, dict) or type(payload.get("op")) is not int:
         raise web.HTTPBadRequest(text="Invalid payload")

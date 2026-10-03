@@ -25,7 +25,7 @@ from qqbot.api import QQAPI, QQAPIError
 from qqbot.assistant import BotAssistant
 from qqbot.commands import CommandRouter
 from qqbot.config import ConfigurationError, Settings, env_bool
-from qqbot.electricity import ElectricityClient, ElectricityError
+from qqbot.electricity import ElectricityClient
 from qqbot.electricity_probe import (
     ProbeConfig,
     ProbeError,
@@ -48,24 +48,7 @@ WEB_CONTEXT = json.dumps(["users", "web-admin", "web-admin"])
 
 class AdminElectricity(ElectricityClient):
     def __init__(self, settings, session, gate_path: Path):
-        super().__init__(settings, session)
-        self.gate_path = gate_path
-
-    async def _query(self, dormitory: str, roomverify: str) -> dict:
-        gate = RequestGate(self.gate_path)
-        try:
-            try:
-                gate.reserve()
-            except ProbeError as exc:
-                raise ElectricityError(str(exc), "cooldown") from None
-            try:
-                return await super()._query(dormitory, roomverify)
-            except ElectricityError as exc:
-                if exc.code == "rate_limited":
-                    gate.defer(exc.retry_after_seconds)
-                raise
-        finally:
-            gate.close()
+        super().__init__(replace(settings, electricity_cooldown_path=gate_path), session)
 
 
 class AdminState:
@@ -126,6 +109,7 @@ class AdminState:
             toolpacks_dir=toolpacks_dir,
             access_path=self.root / settings.access_path,
             portal_db_path=self.root / settings.portal_db_path,
+            electricity_cooldown_path=self.root / settings.electricity_cooldown_path,
         )
 
     def chat_assistant(self):
@@ -141,7 +125,7 @@ class AdminState:
                     electricity=AdminElectricity(
                         settings,
                         self.session,
-                        self.root / "data/electricity-test/cooldown.sqlite3",
+                        settings.electricity_cooldown_path,
                     ),
                     tool_manager=self.tool_manager,
                     audience="admin",
@@ -606,7 +590,7 @@ async def test_electricity(state: AdminState) -> dict:
     plan = make_plan(config, argparse.Namespace(port=443, proxy="direct", dormitory="", area=""))
     # 管理员明确保存的地址与机器人的运行配置一致；不扫描端口或自动尝试其他地址。
     plan = replace(plan, endpoint=settings.electricity_endpoint)
-    gate = RequestGate(state.root / "data/electricity-test/cooldown.sqlite3")
+    gate = RequestGate(state.root / settings.electricity_cooldown_path)
     try:
         gate.reserve()
         result = await probe(plan, state.session)

@@ -47,6 +47,7 @@ class Settings:
     electricity_cookie: str = field(default="", repr=False)
     electricity_tapp_id: str = field(default="", repr=False)
     electricity_default_area: str = ""
+    electricity_cooldown_path: Path = Path("data/electricity-test/cooldown.sqlite3")
     electricity_endpoint: str = (
         "https://cloudpaygateway.59wanmei.com/paygateway/smallpaygateway/trade"
     )
@@ -197,7 +198,7 @@ class Settings:
             raise ConfigurationError("历史保留天数必须为1～3650的整数。") from None
         if not 1 <= retention <= 3650:
             raise ConfigurationError("历史保留天数必须为1～3650的整数。")
-        portal_enabled = env_bool("PORTAL_ENABLED", values=values)
+        portal_enabled = env_bool("PORTAL_ENABLED", values=values) and not dry_run
         public_base_url = values.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
         if public_base_url:
             try:
@@ -244,6 +245,9 @@ class Settings:
         visibility = values.get("PAGE_VISIBILITY", "public")
         if visibility not in {"public", "unlisted"}:
             raise ConfigurationError("网页发布方式应为public或unlisted。")
+        portal_path = Path(values.get("PORTAL_DB_PATH", "data/portal.sqlite3"))
+        if dry_run:
+            portal_path = portal_path.with_name(f"{portal_path.stem}.dry-run{portal_path.suffix}")
         return cls(
             app_id=app_id,
             app_secret=secret,
@@ -266,6 +270,9 @@ class Settings:
             electricity_cookie=values.get("ELECTRICITY_COOKIE", "").strip(),
             electricity_tapp_id=values.get("ELECTRICITY_TAPP_ID", "").strip(),
             electricity_default_area=values.get("ELECTRICITY_DEFAULT_AREA", "").strip(),
+            electricity_cooldown_path=Path(
+                values.get("ELECTRICITY_COOLDOWN_PATH", "data/electricity-test/cooldown.sqlite3")
+            ),
             electricity_endpoint=endpoint,
             bot_name=name,
             bot_persona=persona,
@@ -282,7 +289,7 @@ class Settings:
             access_path=Path(values.get("ACCESS_POLICY_PATH", "data/access/policy.json")),
             portal_enabled=portal_enabled,
             public_base_url=public_base_url,
-            portal_db_path=Path(values.get("PORTAL_DB_PATH", "data/portal.sqlite3")),
+            portal_db_path=portal_path,
             curve_link_minutes=curve_minutes,
             page_visibility=visibility,
             electricity_history_enabled=env_bool(

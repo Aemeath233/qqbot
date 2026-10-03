@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+import sqlite3
 import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -61,7 +62,28 @@ class ElectricityClient:
             self.cache = {key: value for key, value in self.cache.items() if now - value[0] < 30}
             if cache_key in self.cache:
                 return {**self.cache[cache_key][1], "cached": True}
-            result = await self._query(room.label, room.roomverify)
+            from qqbot.electricity_probe import ProbeError, RequestGate
+
+            gate = None
+            try:
+                gate = RequestGate(self.settings.electricity_cooldown_path)
+                try:
+                    gate.reserve()
+                except ProbeError as exc:
+                    raise ElectricityError(str(exc), "cooldown") from None
+                try:
+                    result = await self._query(room.label, room.roomverify)
+                except ElectricityError as exc:
+                    if exc.code == "rate_limited":
+                        gate.defer(exc.retry_after_seconds)
+                    raise
+            except (OSError, sqlite3.Error):
+                raise ElectricityError(
+                    "电费请求冷却记录暂时不可用，已停止继续查询。", "cooldown_unavailable"
+                ) from None
+            finally:
+                if gate is not None:
+                    gate.close()
             result["area"] = room.area
             result["area_name"] = room.area_name
             self.cache[cache_key] = (time.monotonic(), result)
