@@ -140,6 +140,23 @@ def upload_files(filename: str, raw: bytes) -> tuple[Skill, dict[str, bytes]]:
         return parse_skill(raw, fallback), {"SKILL.md": raw}
     if not filename.lower().endswith(".zip"):
         raise SkillError("只支持 Markdown 文件或 ZIP 技能包。")
+    files = read_archive(raw)
+    manifests = [path for path in files if path.name.casefold() == "skill.md"]
+    if len(manifests) != 1:
+        raise SkillError("每次上传一个技能，包内必须只有一个 SKILL.md。")
+    prefix = manifests[0].parent
+    if any(not path.is_relative_to(prefix) for path in files):
+        raise SkillError("请将单个技能目录单独压缩，不能包含目录外的文件。")
+    normalized = {path.relative_to(prefix).as_posix(): value for path, value in files.items()}
+    manifest = manifests[0].relative_to(prefix).as_posix()
+    normalized["SKILL.md"] = normalized.pop(manifest)
+    return parse_skill(normalized["SKILL.md"], prefix.name.lower()), normalized
+
+
+def read_archive(raw: bytes) -> dict[PurePosixPath, bytes]:
+    """共用的有界ZIP读取；不写磁盘、不执行文件。"""
+    if not raw or len(raw) > MAX_UPLOAD:
+        raise SkillError("ZIP最大1 MiB。")
     files, seen = {}, set()
     try:
         with ZipFile(io.BytesIO(raw)) as archive:
@@ -164,16 +181,7 @@ def upload_files(filename: str, raw: bytes) -> tuple[Skill, dict[str, bytes]]:
                     files[path] = content
     except (BadZipFile, OSError, RuntimeError, NotImplementedError):
         raise SkillError("ZIP 无法读取。") from None
-    manifests = [path for path in files if path.name.casefold() == "skill.md"]
-    if len(manifests) != 1:
-        raise SkillError("每次上传一个技能，包内必须只有一个 SKILL.md。")
-    prefix = manifests[0].parent
-    if any(not path.is_relative_to(prefix) for path in files):
-        raise SkillError("请将单个技能目录单独压缩，不能包含目录外的文件。")
-    normalized = {path.relative_to(prefix).as_posix(): value for path, value in files.items()}
-    manifest = manifests[0].relative_to(prefix).as_posix()
-    normalized["SKILL.md"] = normalized.pop(manifest)
-    return parse_skill(normalized["SKILL.md"], prefix.name.lower()), normalized
+    return files
 
 
 class SkillStore:

@@ -161,6 +161,8 @@ def create_app(settings: Settings, *, api=None, assistant=None) -> web.Applicati
             active_assistant = (
                 assistant if assistant is not None else BotAssistant(settings, session)
             )
+            if callable(getattr(active_assistant, "start", None)):
+                await active_assistant.start()
             runtime = Runtime(settings, active_api, active_assistant)
             application[RUNTIME] = runtime
             runtime.worker = asyncio.create_task(runtime.work(), name="qqbot-replies")
@@ -176,6 +178,8 @@ def create_app(settings: Settings, *, api=None, assistant=None) -> web.Applicati
                         await runtime.worker
                 finally:
                     runtime.inbox.close()
+                    if callable(getattr(active_assistant, "close", None)):
+                        await active_assistant.close()
 
     app.cleanup_ctx.append(lifespan)
     app.router.add_get("/healthz", health)

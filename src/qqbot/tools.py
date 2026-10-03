@@ -4,6 +4,11 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
+from referencing import Registry
+from referencing.exceptions import NoSuchResource, Unresolvable
+
 from qqbot.electricity import ElectricityClient, ElectricityError
 from qqbot.games import GameError, draw_lots, roll_dice
 from qqbot.skills import MAX_FILE, SkillError
@@ -16,6 +21,43 @@ class FunctionTool:
     description: str
     parameters: dict
     handler: Callable[..., Awaitable[dict]]
+    full_schema: bool = False
+
+
+def validate_schema(schema):
+    if (
+        not isinstance(schema, dict)
+        or schema.get("type") != "object"
+        or len(json.dumps(schema)) > 16000
+    ):
+        raise ValueError("工具参数Schema需为16000字以内的object。")
+    pending = [(schema, 0)]
+    count = 0
+    while pending:
+        value, depth = pending.pop()
+        count += 1
+        if depth > 16 or count > 1000:
+            raise ValueError("工具Schema过于复杂。")
+        if isinstance(value, dict):
+            if "$id" in value:
+                raise ValueError("不支持Schema外部标识。")
+            for key in ("$ref", "$dynamicRef", "$recursiveRef"):
+                if key in value and (
+                    not isinstance(value[key], str) or not value[key].startswith("#/")
+                ):
+                    raise ValueError("不支持外部Schema引用。")
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            pending.extend((item, depth + 1) for item in value)
+    Draft202012Validator.check_schema(schema)
+
+
+def no_remote_schema(uri):
+    raise NoSuchResource(ref=uri)
+
+
+def invalid_json_constant(value):
+    raise ValueError("Non-finite JSON number")
 
 
 class ToolRegistry:
@@ -46,10 +88,18 @@ class ToolRegistry:
         if not isinstance(arguments, str) or len(arguments) > 4000:
             return self._invalid()
         try:
-            values = json.loads(arguments)
+            values = json.loads(arguments, parse_constant=invalid_json_constant)
         except (ValueError, UnicodeError):
             return self._invalid()
         tool = self._tools[name]
+        if tool.full_schema:
+            try:
+                Draft202012Validator(
+                    tool.parameters, registry=Registry(retrieve=no_remote_schema)
+                ).validate(values)
+            except (ValidationError, SchemaError, ValueError, RecursionError, Unresolvable):
+                return self._invalid()
+            return await tool.handler(**values) if isinstance(values, dict) else self._invalid()
         properties = tool.parameters.get("properties", {})
         if (
             not isinstance(values, dict)

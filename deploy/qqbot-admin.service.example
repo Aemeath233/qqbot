@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=qqbot
 WorkingDirectory=/opt/qqbot
+# 工具包声明额外依赖时，uv需要在此服务用户的PATH中。
 # 先以相同用户在项目目录运行 qqbot admin --set-password。
 ExecStart=/opt/qqbot/.venv/bin/qqbot admin --port 8081
 Restart=on-failure

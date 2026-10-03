@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "campus-utils",
+  "description": "校园小工具：计算AA分摊金额，将分钟数格式化为时长。",
+  "mode": "functions",
+  "entrypoint": "tools.py",
+  "exports": ["split_bill", "format_duration"],
+  "requirements": [],
+  "env_keys": []
+}

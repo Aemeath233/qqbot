@@ -8,6 +8,7 @@ Type=simple
 # 先创建 qqbot 普通用户，把项目放入 /opt/qqbot，并让此用户拥有项目目录。
 User=qqbot
 WorkingDirectory=/opt/qqbot
+# 工具包声明额外依赖时，uv需要在此服务用户的PATH中。
 ExecStart=/opt/qqbot/.venv/bin/qqbot serve
 Restart=on-failure
 RestartSec=5

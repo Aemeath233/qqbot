@@ -6,6 +6,7 @@
   <title>QQ 机器人管理</title>
   <link rel="stylesheet" href="/admin.css">
   <script src="/admin.js" defer></script>
+  <script src="/toolpacks.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -42,6 +43,7 @@
           <button type="button" data-page="electricity">电费</button>
           <button type="button" data-page="tools">功能开关</button>
           <button type="button" data-page="skills">技能</button>
+          <button type="button" data-page="toolpacks">MCP 工具</button>
         </nav>
         <p class="sidebar-note">QQ 官方接入<br>一个模型服务<br>按需启用内置功能</p>
       </aside>
@@ -76,6 +78,15 @@
         </div>
         <div id="skills-list" class="skills-list"></div>
         <div id="skill-detail" class="card skill-detail" hidden><h2 id="skill-detail-title">技能说明</h2><pre id="skill-content"></pre></div>
+      </section>
+      <section id="toolpacks-panel" hidden>
+        <div class="card skill-upload"><h2>上传 Python 工具包</h2><p class="muted small">ZIP 内包含 toolpack.json 和 Python 函数。机器人封装 MCP 并管理进程，额外依赖由 uv 安装，无须另开终端。</p><p class="muted small">启用会以服务用户权限执行代码。子进程不是安全沙箱；请只启用自己编写或已审查的包。上传和查看不会运行代码。</p>
+          <form id="toolpack-upload-form"><label for="toolpack-file">选择工具 ZIP</label><input id="toolpack-file" type="file" accept=".zip" required><button id="upload-toolpack" type="submit" class="primary">上传工具包</button></form>
+          <p id="toolpack-message" class="message" role="status"></p>
+        </div>
+        <div class="chat-toolbar"><span class="small muted">状态显示网页工具进程；QQ 服务自动同步启停与配置。</span><button id="refresh-toolpacks" type="button" class="secondary">刷新工具状态</button></div>
+        <div id="toolpacks-list" class="skills-list"></div>
+        <div id="toolpack-detail" class="card skill-detail" hidden><h2 id="toolpack-detail-title">工具源码</h2><pre id="toolpack-source"></pre></div>
       </section>
       <form id="settings-form" hidden novalidate>
         <div id="config-groups" class="config-grid"></div>

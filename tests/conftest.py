@@ -14,6 +14,7 @@ def settings(tmp_path):
         "test-secret",
         db_path=tmp_path / "inbox.sqlite3",
         skills_dir=tmp_path / "skills",
+        toolpacks_dir=tmp_path / "toolpacks",
     )
 
 

@@ -39,6 +39,7 @@ const groups = [
     ["MEMORY_ENABLED", "允许主动登记昵称和宿舍", "bool"],
     ["GAMES_ENABLED", "启用骰子与抽签", "bool"],
     ["SKILLS_ENABLED", "启用文档技能", "bool"],
+    ["TOOLPACKS_ENABLED", "启用可执行 MCP 工具包", "bool"],
   ]},
 ];
 const controls = new Map();
@@ -51,6 +52,7 @@ const pageInfo = {
   electricity: ["电费", "当前电量、个人台账与用电估算集中配置。"],
   tools: ["功能开关", "保留日常用得上的功能，按需关闭小互动。"],
   skills: ["技能", "按通用 Agent Skills 结构导入与管理，使用现有工具完成任务。"],
+  toolpacks: ["MCP 工具", "上传、审查、信任并启用。机器人自动启动工具进程并将函数交给模型。"],
 };
 let currentPage = "overview";
 let csrf = "", revision = "", timer = null;
@@ -178,7 +180,8 @@ function showPage(page) {
   el("overview-panel").hidden = page !== "overview";
   el("chat-panel").hidden = page !== "chat";
   el("skills-panel").hidden = page !== "skills";
-  el("settings-form").hidden = page === "overview" || page === "chat" || page === "skills";
+  el("toolpacks-panel").hidden = page !== "toolpacks";
+  el("settings-form").hidden = ["overview","chat","skills","toolpacks"].includes(page);
   el("module-list").hidden = page !== "tools";
   for (const section of sections.values()) section.element.hidden = section.page !== page;
   for (const button of document.querySelectorAll(".sidebar [data-page]")) {
@@ -271,6 +274,7 @@ async function loadDashboard() {
   el("login-panel").hidden = true; el("dashboard").hidden = false; el("logout").hidden = false;
   document.body.classList.add("dashboard-mode"); showPage(currentPage);
   if (currentPage === "skills") await refreshSkills();
+  if (currentPage === "toolpacks") await refreshToolpacks();
   await refreshStatus(); clearInterval(timer); timer = setInterval(refreshStatus, 30000);
 }
 
@@ -309,7 +313,7 @@ el("reload-settings").addEventListener("click", async () => {
   catch (error) { message("save-message", error.message, true); }
 });
 el("refresh-status").addEventListener("click", refreshStatus);
-for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => { showPage(button.dataset.page); if (button.dataset.page === "skills") refreshSkills().catch(error => message("skill-message",error.message,true)); });
+for (const button of document.querySelectorAll("[data-page]")) button.addEventListener("click", () => { showPage(button.dataset.page); if (button.dataset.page === "skills") refreshSkills().catch(error => message("skill-message",error.message,true)); if (button.dataset.page === "toolpacks") refreshToolpacks().catch(error => message("toolpack-message",error.message,true)); });
 for (const button of document.querySelectorAll("[data-prompt]")) button.addEventListener("click", () => { el("chat-message").value = button.dataset.prompt; el("chat-message").focus(); });
 
 function bubble(role, text) {

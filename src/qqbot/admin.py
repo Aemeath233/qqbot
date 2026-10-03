@@ -33,8 +33,10 @@ from qqbot.electricity_probe import (
     probe,
 )
 from qqbot.llm import ChatCompletionsClient, LLMError
+from qqbot.mcp_runtime import MCPManager
 from qqbot.messages import Message
 from qqbot.skills import MAX_UPLOAD, SkillError, SkillStore
+from qqbot.toolpacks import ToolPackError
 from qqbot.user_store import UserDataError, UserStore
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,7 @@ class AdminState:
         self.save_lock = asyncio.Lock()
         self.chat_lock = asyncio.Lock()
         self.skill_lock = asyncio.Lock()
+        self.tool_lock = asyncio.Lock()
         self.assistant = None
         self.assistant_revision = ""
         self.assistant_factory = assistant_factory
@@ -81,6 +84,10 @@ class AdminState:
         self.checks = checks or {"qq": test_qq, "llm": test_llm, "electricity": test_electricity}
         self.session: aiohttp.ClientSession | None = None
         values = self.config.values()
+        self.tool_manager = MCPManager(
+            self.root / Path(values.get("TOOLPACKS_DIR", "data/toolpacks")),
+            enabled=lambda: env_bool("TOOLPACKS_ENABLED", True, values=self.config.values()),
+        )
         self.hosts = {
             host.strip().casefold()
             for host in values.get("ADMIN_ALLOWED_HOSTS", "localhost,127.0.0.1,::1").split(",")
@@ -98,7 +105,12 @@ class AdminState:
             if settings.skills_dir.is_absolute()
             else self.root / settings.skills_dir
         )
-        return replace(settings, db_path=path, skills_dir=skills_dir)
+        toolpacks_dir = (
+            settings.toolpacks_dir
+            if settings.toolpacks_dir.is_absolute()
+            else self.root / settings.toolpacks_dir
+        )
+        return replace(settings, db_path=path, skills_dir=skills_dir, toolpacks_dir=toolpacks_dir)
 
     def chat_assistant(self):
         revision = self.config.revision()
@@ -115,6 +127,7 @@ class AdminState:
                         self.session,
                         self.root / "data/electricity-test/cooldown.sqlite3",
                     ),
+                    tool_manager=self.tool_manager,
                 )
             )
             self.assistant_revision = revision
@@ -162,7 +175,7 @@ async def security(request: web.Request, handler):
         response = web.json_response({"message": exc.text}, status=exc.status)
     except ConfigConflict as exc:
         response = web.json_response({"message": str(exc)}, status=409)
-    except (ConfigurationError, ProbeError, SkillError) as exc:
+    except (ConfigurationError, ProbeError, SkillError, ToolPackError) as exc:
         response = web.json_response({"message": str(exc)}, status=400)
     except (OSError, sqlite3.Error):
         response = web.json_response({"message": "本地配置或数据目录无法读写。"}, status=503)
@@ -267,6 +280,7 @@ async def status(request: web.Request):
             {"id": "memory", "name": "昵称与宿舍记忆", "enabled": settings.memory_enabled},
             {"id": "games", "name": "骰子与抽签", "enabled": settings.games_enabled},
             {"id": "skills", "name": "文档技能", "enabled": settings.skills_enabled},
+            {"id": "toolpacks", "name": "MCP工具包", "enabled": settings.toolpacks_enabled},
         ]
         async with state.session.get(
             f"http://127.0.0.1:{settings.port}/healthz",
@@ -383,6 +397,93 @@ async def toggle_skill(request: web.Request):
     return web.json_response({"message": "技能状态已更新，下一条模型请求生效。"})
 
 
+async def list_toolpacks(request):
+    return web.json_response(await request.app[STATE].tool_manager.snapshot())
+
+
+async def upload_toolpack(request):
+    state = request.app[STATE]
+    if request.content_type != "multipart/form-data":
+        raise web.HTTPBadRequest(text="请上传ZIP工具包。")
+    reader = await request.multipart()
+    part = await reader.next()
+    if part is None or part.name != "file" or not part.filename:
+        raise web.HTTPBadRequest(text="请选择ZIP工具包。")
+    data = bytearray()
+    while chunk := await part.read_chunk():
+        data.extend(chunk)
+        if len(data) > MAX_UPLOAD:
+            raise web.HTTPRequestEntityTooLarge(max_size=MAX_UPLOAD, actual_size=len(data))
+    if await reader.next() is not None:
+        raise web.HTTPBadRequest(text="每次只能上传一个工具包。")
+    async with state.tool_lock:
+        package = await asyncio.to_thread(
+            state.tool_manager.store.install, part.filename, bytes(data)
+        )
+    return web.json_response(
+        {"package": package, "message": "已上传，保持停用；尚未运行包内代码。"}
+    )
+
+
+async def view_toolpack(request):
+    store = request.app[STATE].tool_manager.store
+    name = request.match_info["name"]
+    pack = store.manifest(name)
+    return web.json_response(
+        {
+            "name": name,
+            "manifest": store.file(name).read_text(encoding="utf-8-sig"),
+            "entrypoint": pack.entrypoint,
+            "source": store.file(name, pack.entrypoint).read_text(encoding="utf-8-sig"),
+        }
+    )
+
+
+async def toggle_toolpack(request):
+    state = request.app[STATE]
+    payload = await request.json()
+    if (
+        not isinstance(payload, dict)
+        or set(payload) - {"enabled", "trusted"}
+        or "enabled" not in payload
+    ):
+        raise web.HTTPBadRequest(text="工具启停请求格式错误。")
+    async with state.tool_lock:
+        state.tool_manager.store.enable(
+            request.match_info["name"], payload["enabled"], payload.get("trusted", False)
+        )
+        await state.tool_manager.reconcile()
+    return web.json_response(
+        {
+            "message": "已提交启用，后台自动启动；可刷新状态查看结果。"
+            if payload["enabled"]
+            else "已停用并停止网页工具进程；QQ服务会自动同步。"
+        }
+    )
+
+
+async def restart_toolpack(request):
+    state = request.app[STATE]
+    state.tool_manager.store.manifest(request.match_info["name"])
+    async with state.tool_lock:
+        state.tool_manager.store.request_restart(request.match_info["name"])
+        await state.tool_manager.reconcile()
+    return web.json_response({"message": "已提交重启；网页与QQ服务会自动同步，无须手动启动MCP。"})
+
+
+async def toolpack_env(request):
+    state = request.app[STATE]
+    payload = await request.json()
+    if not isinstance(payload, dict) or set(payload) - {"values", "clear"}:
+        raise web.HTTPBadRequest(text="工具环境配置格式错误。")
+    async with state.tool_lock:
+        state.tool_manager.store.set_env(
+            request.match_info["name"], payload.get("values", {}), payload.get("clear", [])
+        )
+        await state.tool_manager.reconcile()
+    return web.json_response({"message": "工具专用配置已保存；启用中的工具会自动重新启动。"})
+
+
 async def test_qq(state: AdminState) -> dict:
     settings = Settings.from_values(state.config.values())
     async with asyncio.timeout(15):
@@ -466,12 +567,19 @@ def create_admin_app(
     async def lifespan(application):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             state.session = session
-            yield
+            await state.tool_manager.start()
+            try:
+                yield
+            finally:
+                if state.assistant and callable(getattr(state.assistant, "close", None)):
+                    await state.assistant.close()
+                await state.tool_manager.close()
 
     app.cleanup_ctx.append(lifespan)
     for route, filename, content_type in (
         ("/", "index.html", "text/html"),
         ("/admin.js", "admin.js", "text/javascript"),
+        ("/toolpacks.js", "toolpacks.js", "text/javascript"),
         ("/admin.css", "admin.css", "text/css"),
     ):
         content = files("qqbot").joinpath("resources/admin", filename).read_text(encoding="utf-8")
@@ -491,6 +599,12 @@ def create_admin_app(
     app.router.add_post("/api/skills/upload", upload_skill)
     app.router.add_get("/api/skills/{name}", view_skill)
     app.router.add_post("/api/skills/{name}", toggle_skill)
+    app.router.add_get("/api/toolpacks", list_toolpacks)
+    app.router.add_post("/api/toolpacks/upload", upload_toolpack)
+    app.router.add_get("/api/toolpacks/{name}", view_toolpack)
+    app.router.add_post("/api/toolpacks/{name}", toggle_toolpack)
+    app.router.add_post("/api/toolpacks/{name}/restart", restart_toolpack)
+    app.router.add_post("/api/toolpacks/{name}/env", toolpack_env)
     app.router.add_post("/api/test/{service}", test_connection)
     return app
 

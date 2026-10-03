@@ -65,18 +65,22 @@ async def chat(settings: Settings, prompt: str | None):
                 else await assistant.generate(task.kind, task.content, "local-console")
             )
 
-        if prompt is not None:
-            print(await respond(prompt))
-            return
-        print("AI 对话测试：可输入自然语言；exit 退出。不会给 QQ 用户发送消息。")
-        while True:
-            try:
-                text = await asyncio.to_thread(input, "你：")
-            except (EOFError, KeyboardInterrupt):
+        await assistant.start()
+        try:
+            if prompt is not None:
+                print(await respond(prompt))
                 return
-            if text.strip().lower() in {"exit", "quit", "退出"}:
-                return
-            print("机器人：" + await respond(text))
+            print("AI 对话测试：可输入自然语言；exit 退出。不会给 QQ 用户发送消息。")
+            while True:
+                try:
+                    text = await asyncio.to_thread(input, "你：")
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if text.strip().lower() in {"exit", "quit", "退出"}:
+                    return
+                print("机器人：" + await respond(text))
+        finally:
+            await assistant.close()
 
 
 def main():

@@ -60,6 +60,8 @@ class Settings:
     games_enabled: bool = True
     skills_enabled: bool = True
     skills_dir: Path = Path("data/skills")
+    toolpacks_enabled: bool = True
+    toolpacks_dir: Path = Path("data/toolpacks")
     electricity_history_enabled: bool = True
     electricity_history_retention_days: int = 365
 
@@ -222,6 +224,8 @@ class Settings:
             games_enabled=env_bool("GAMES_ENABLED", True, values=values),
             skills_enabled=env_bool("SKILLS_ENABLED", True, values=values),
             skills_dir=Path(values.get("SKILLS_DIR", "data/skills")),
+            toolpacks_enabled=env_bool("TOOLPACKS_ENABLED", True, values=values),
+            toolpacks_dir=Path(values.get("TOOLPACKS_DIR", "data/toolpacks")),
             electricity_history_enabled=env_bool(
                 "ELECTRICITY_HISTORY_ENABLED", True, values=values
             ),

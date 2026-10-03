@@ -125,6 +125,9 @@ footer { max-width: 1160px; margin: auto; padding: 0 28px 23px; display: flex; g
 .skills-list { display: grid; gap: 15px; margin: 22px 0; }
 .skill-card p { margin-top: 10px; overflow-wrap: anywhere; }
 .skill-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.7 "Segoe UI", "Microsoft YaHei", sans-serif; color: #4c636c; }
+.tool-env-form { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e5eeee; display: grid; gap: 10px; }
+.tool-env-form input[type="password"] { display: block; margin-top: 8px; }
+#toolpack-upload-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 850px) {
   .admin-shell { grid-template-columns: 1fr; gap: 22px; }
   .sidebar { position: static; padding: 10px; }
