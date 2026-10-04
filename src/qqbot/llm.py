@@ -1,5 +1,7 @@
 """兼容 OpenAI Chat Completions 的异步客户端，不打印响应体或 API Key。"""
 
+from urllib.parse import urlsplit
+
 import aiohttp
 
 from qqbot.config import Settings
@@ -18,6 +20,9 @@ class ChatCompletionsClient:
         body = {"model": self.settings.llm_model, "messages": messages, "max_tokens": 800}
         if tools:
             body.update(tools=tools, tool_choice="auto")
+        if urlsplit(self.settings.llm_base_url).hostname == "api.deepseek.com":
+            # 电费查询无需长推理；DeepSeek 默认开启思考，可能耗尽短输出预算。
+            body["thinking"] = {"type": "disabled"}
         try:
             async with self.session.post(
                 f"{self.settings.llm_base_url}/chat/completions",

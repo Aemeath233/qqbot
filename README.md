@@ -4,6 +4,8 @@ Python 3.12+、uv。默认使用 WebSocket 主动连接 QQ，不需要公网域�
 
 例如在 QQ 群里 @机器人，发送“查一下33号楼2035室还有多少电”；也可私聊，或发送 `/电费 33#2035`。楼号或房号不明确、房间存在多个候选时，机器人会先询问，不猜测、不调用电费接口。自然语言模型未配置时，机器人不会尝试猜意图或请求校园接口。
 
+消息直接交给模型，由 `tool_choice=auto` 决定调用工具或回复文本。没有正则关键词意图拦截；“看看33楼4032宿舍电费”“我住33幢4032，帮忙瞅瞅电还剩多少”等说法都交给模型理解。程序只校验工具名、参数结构、宿舍编号格式、目录匹配和请求频率。模型决定是否追问或拒绝无关问题；每条消息独立处理，补充信息时请提供完整楼号和房号。
+
 电量请求由程序校验宿舍映射、缓存 30 秒，并通过共享 SQLite 冷却门限限制校园请求频率；不查询历史、不估算耗电、不保存个人资料、不生成图片或网页。用于回调去重和可靠回复的 QQ 消息队列仍保存在本地 SQLite。
 
 ## 安装和配置
@@ -17,6 +19,16 @@ nano .env
 填写 QQ 开放平台的 `QQ_APP_ID`、`QQ_APP_SECRET`，以及兼容 OpenAI 的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。确认 `QQ_TRANSPORT=websocket`、`LLM_ENABLED=true`、`ELECTRICITY_ENABLED=true` 和学校编号。API Key、AppSecret、电费会话凭证只放在服务器 `.env`，不要提交到 GitHub。
 
 `ELECTRICITY_SCHOOL_CODE=1402` 使用内置宿舍目录；其他学校请配置对应的学校编号及映射文件。
+
+使用 DeepSeek 官方服务时配置：
+
+```dotenv
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-flash
+LLM_API_KEY=你的DeepSeek密钥
+```
+
+DeepSeek 的 [Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/) 使用兼容接口。连接官方 `api.deepseek.com` 时，程序按 [思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/) 显式关闭思考，避免简单查询消耗长推理；其他兼容服务不发送此扩展参数。成功查询后直接发送工具返回的真实电量，不再调用模型改写结果。
 
 ## 启动
 

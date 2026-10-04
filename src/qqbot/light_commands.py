@@ -16,11 +16,6 @@ class LightCommandRouter:
         text = message.content.strip()
         if text.lower() in {"/help", "/帮助", "/菜单"}:
             return ReplyTask("text", HELP)
-        if text.startswith("/"):
-            if not text.lower().startswith(("/电费", "/electricity")):
-                return ReplyTask("text", "当前只支持查询宿舍当前剩余电量。发送 /帮助 查看用法。")
-            _, _, argument = text.partition(" ")
-            text = "查询宿舍当前剩余电量 " + argument.strip()
         if message.full_group and not llm_enabled:
             return None
         return ReplyTask("chat", text)

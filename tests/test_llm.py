@@ -1,4 +1,5 @@
 from dataclasses import replace
+from unittest.mock import patch
 
 import aiohttp
 import pytest
@@ -55,6 +56,7 @@ async def test_compatible_chat_endpoint_tools_and_reasoning(settings):
         assert result["reasoning_content"] == "tool needed"
         assert result["tool_calls"][0]["id"] == "call1"
     assert captured[0]["tool_choice"] == "auto"
+    assert "thinking" not in captured[0]
     assert captured[0]["model"] == "compatible-model"
     assert "private-model-key" not in str(captured)
 
@@ -92,3 +94,29 @@ async def test_model_errors_hide_body(settings):
         with pytest.raises(LLMError) as caught:
             await ChatCompletionsClient(settings, session).complete([], [])
         assert "private-api-key" not in str(caught.value)
+
+
+async def test_deepseek_request_uses_auto_tools_and_disables_thinking(settings):
+    captured = []
+
+    async def handle(request):
+        captured.append(await request.json())
+        return web.json_response({"choices": [{"message": {"content": "请提供楼号和房号。"}}]})
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handle)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        configured = replace(
+            settings, llm_base_url="https://api.deepseek.com", llm_model="deepseek-flash"
+        )
+        real_post = session.post
+        target = str(server.make_url("/chat/completions"))
+        with patch.object(session, "post", side_effect=lambda url, **kw: real_post(target, **kw)):
+            result = await ChatCompletionsClient(configured, session).complete(
+                [{"role": "user", "content": "看看宿舍电费"}],
+                [{"type": "function", "function": {"name": "query_electricity"}}],
+            )
+    assert result["content"] == "请提供楼号和房号。"
+    assert captured[0]["thinking"] == {"type": "disabled"}
+    assert captured[0]["tool_choice"] == "auto"
+    assert captured[0]["model"] == "deepseek-flash"

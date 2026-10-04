@@ -10,21 +10,30 @@ from qqbot.llm import ChatCompletionsClient, LLMError
 
 logger = logging.getLogger(__name__)
 SYSTEM = (
-    "你叫小电，是友好、简洁的宿舍电费查询小助手，只查询当前剩余电量。"
-    "遇到其他问题要礼貌拒绝，不闲聊，不扮演其他角色。唯一可用的工具是 query_electricity。"
-    "用户询问当前电量时，楼号与房间号都明确且房间唯一时才调用工具；"
-    "用户没说房间时，先用中文询问楼号和房间号，不得猜测或调用工具。"
+    "你是电费查询小助手，只帮助用户查询宿舍当前剩余电量，用简洁中文回答。"
+    "请根据用户的自然语言决定是否调用唯一工具 query_electricity，不要求固定命令或关键词。"
+    "‘看看电费’、‘帮我看下宿舍电费’、‘还有多少电’通常都表示查询当前剩余电量。"
+    "例如‘看看33楼4032宿舍电费’应调用 query_electricity，dormitory 为33#4032。"
+    "‘/电费 33#4032’和‘/electricity 33#4032’也表示同一查询。"
+    "用户要查当前电量，且楼号与房号都明确、只查询一间宿舍时，应调用工具。"
+    "缺少楼号或房号时，请用户提供完整信息，不得猜测，也不得调用工具。"
+    "如果用户要求同时查询多间宿舍，请用户选择一间。"
     "用户说‘19号楼312’时传19#312；不能把19312擅自拆成楼号和房号。"
-    "有多个区域候选时先询问区域，不能猜。工具返回以度为单位的真实剩余电量，不是金额。"
-    "本机器人不回答电费之外的问题，也不提供历史分析、耗电量估算、预测或图表。"
-    "不得编造、换算或改写工具返回的电量；工具失败时如实说明。"
+    "area 仅在用户明确提供区域名称或编号时传入，否则省略。"
+    "只负责当前剩余电量，不提供历史分析、耗电量估算、预测、图表、金额换算或缴费充值。"
+    "用户问其他问题时，简短礼貌地说明只能帮助查询宿舍电量，不回答其他问题或扮演其他角色。"
+    "用户问候或询问用法时，可以简短引导其提供宿舍信息。"
+    "没有工具结果时，不得声称已经查询成功，不得编造电量。"
 )
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "query_electricity",
-            "description": "查询一个明确宿舍当前的剩余电量，单位为度。",
+            "description": (
+                "查询一个宿舍当前剩余电量，单位为度。用户说查电费、看看宿舍电费、"
+                "还有多少电时使用。仅当楼号、房号明确时调用；缺少信息先询问。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -37,20 +46,6 @@ TOOLS = [
         },
     }
 ]
-ELECTRICITY_INTENT = re.compile(r"电费|电量|用电|电表|宿舍|房间|房号|余额|剩余电")
-ROOM_REFERENCE = re.compile(
-    r"(?<!\d)(\d{1,4})\s*(?:号楼|楼|栋|#)\s*(\d{1,5})(?!\d)"
-)
-UNSUPPORTED_REQUEST = re.compile(
-    r"最近.{0,8}(?:天|周|月)|过去.{0,8}(?:天|周|月)|历史|统计|曲线|分析|"
-    r"用了多少|耗电|预测|昨天|前天|上周|上个月|以前|消耗|使用了|少了|"
-    r"多少钱|价格|费用|缴费|充值|天气|新闻|翻译|写作|代码|作业|位置|地址|路线|谁|姓名|"
-    r"什么时候|怎么.{0,4}(?:交|缴|充值)"
-)
-CURRENT_QUERY = re.compile(
-    r"^电费$|(?:查|查询).{0,20}(?:电费|电量|余额|剩余|用电)|还有多少|还有没有电|还剩|剩余电|"
-    r"余额|几度|多少.{0,3}电|电.{0,4}(?:多少|几度|够)|当前电量|现在电量|有电吗"
-)
 
 
 def reject_json_constant(_value: str):
@@ -68,15 +63,6 @@ class LightAssistant:
             return self._refusal()
         if not self.settings.llm_enabled:
             return "自然语言查询尚未配置模型服务，请在 .env 中填写 LLM_API_KEY 和 LLM_MODEL。"
-        room_mentioned = ROOM_REFERENCE.search(payload) is not None
-        if (
-            not CURRENT_QUERY.search(payload)
-            or not (ELECTRICITY_INTENT.search(payload) or room_mentioned)
-        ):
-            return self._refusal()
-        if UNSUPPORTED_REQUEST.search(payload):
-            return self._refusal()
-
         try:
             response = await self.model.complete(
                 [{"role": "system", "content": SYSTEM}, {"role": "user", "content": payload}],
@@ -88,14 +74,11 @@ class LightAssistant:
 
         calls = response.get("tool_calls") or []
         if not calls:
-            if not CURRENT_QUERY.search(payload):
-                return self._refusal()
-            rooms = list(ROOM_REFERENCE.finditer(payload))
-            if not rooms:
-                return "请明确告诉我楼号和房间号，例如“查一下33号楼2035室还有多少电”。"
-            if len(rooms) > 1:
-                return "一次只能查一间宿舍，请只提供一个楼号和房间号。"
-            return "请补充明确的区域，或把查询写成“查一下33号楼2035室还有多少电”。"
+            content = response.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            logger.warning("电费模型未返回文本或工具调用")
+            return "这次没有完成查询，请稍后重试，并在消息里提供楼号和房间号。"
         if len(calls) != 1 or calls[0]["function"]["name"] != "query_electricity":
             return "每条消息只支持查询一个宿舍。"
         try:
@@ -107,31 +90,17 @@ class LightAssistant:
                 or set(arguments) - {"dormitory", "area"}
                 or not isinstance(arguments.get("dormitory"), str)
                 or not 0 < len(arguments["dormitory"]) <= 80
-                or re.fullmatch(r"\d{1,4}#\d{1,5}", arguments["dormitory"]) is None
+                or re.fullmatch(r"[0-9]{1,3}#[0-9]{1,6}", arguments["dormitory"]) is None
                 or not isinstance(arguments.get("area", ""), str)
                 or len(arguments.get("area", "")) > 80
             ):
                 raise ValueError
         except (ValueError, TypeError, RecursionError):
             return "请告诉我明确的楼号和房间号，例如33号楼2035室。"
-        rooms = list(ROOM_REFERENCE.finditer(payload))
-        room = rooms[0] if len(rooms) == 1 else None
-        building, room_number = arguments["dormitory"].split("#", maxsplit=1)
-        if room is None or room.groups() != (building, room_number):
-            return "为了避免查错，请在消息里明确写出楼号和房间号，例如33号楼2035室。"
         area = arguments.get("area", "").strip()
-        if area:
-            if area.isdigit():
-                mentioned = re.search(rf"(?<!\d){re.escape(area)}(?!\d)", payload) is not None
-            else:
-                mentioned = area.casefold() in payload.casefold()
-            if not mentioned:
-                return "我还不确定查询区域，请明确告诉我你选择的区域名称或编号。"
 
         try:
-            result = await self.electricity.query(
-                arguments["dormitory"], area=area
-            )
+            result = await self.electricity.query(arguments["dormitory"], area=area)
         except ElectricityError as exc:
             return str(exc)
         return format_electricity(result)
