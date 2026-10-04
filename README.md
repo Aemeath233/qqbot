@@ -48,3 +48,14 @@ uv run qqbot serve
 仅在应用需要 Webhook 时设置 `QQ_TRANSPORT=webhook`，或运行 `uv run qqbot serve --transport webhook`。该模式监听 `127.0.0.1:8080`，QQ 回调为 `/qqbot`，健康检查为 `/healthz`；需要公网 HTTPS 转发和平台回调配置。两种模式共用同一电费查询和消息去重逻辑，只运行一个实例。
 
 连接协议参考 QQ 官方的 [事件订阅与通知](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html)、[WSS 接入点](https://bot.q.qq.com/wiki/develop/api-v2/openapi/wss/url_get.html) 和 [网关错误码](https://bot.q.qq.com/wiki/develop/api-v2/openapi/error/error.html)。
+
+## 清理 QQ 平台旧指令面板
+
+QQ 平台的指令面板独立保存；移除本地功能不会自动删除平台上的指令入口。一次性维护脚本读取当前目录 `.env` 的 QQ 凭证，不连接模型或电费服务，也不需要停止机器人：
+
+```bash
+uv run --no-dev python scripts/clear_qq_panels.py --scope all
+uv run --no-dev python scripts/clear_qq_panels.py --scope all --apply
+```
+
+第一条只查看，第二条备份后删除当前 AppID 四个场景的全部指令面板。只清理群聊可以使用 `--scope group`。删除间隔至少 6.1 秒，遇到错误即停止；面板完整详情保存在忽略的 `data/qq-panels-backup/`，不打印凭证或关联对象 ID。这个脚本处理 [指令面板](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/)，不修改单聊底部的自定义菜单；接口无记录而客户端仍有指令时，需进一步检查旧平台配置或客户端缓存。
