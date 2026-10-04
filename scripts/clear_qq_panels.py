@@ -65,6 +65,13 @@ def unwrap_response(response, required_key):
                 raise QQAPIError(200, current[key])
         if required_key in current:
             return current
+        if (
+            required_key == "records"
+            and current.get("is_end") is True
+            and current.get("next_cursor", "") == ""
+        ):
+            # 实际接口在列表为空时会省略 records，只返回 is_end=true。
+            return {**current, "records": []}
         wrapped = next(
             (current[key] for key in ("data", "result", "d") if isinstance(current.get(key), dict)),
             None,

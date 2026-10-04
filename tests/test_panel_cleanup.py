@@ -128,3 +128,34 @@ async def test_wrapped_detail_and_delete_error_are_handled(tmp_path):
             api, [{"panel_id": "one", "scope": "group"}], AsyncMock(), backup_dir=tmp_path
         )
     assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"is_end": True},
+        {"is_end": True, "next_cursor": ""},
+        {"data": {"is_end": True}},
+        {"code": 0, "result": {"is_end": True}},
+    ],
+)
+async def test_empty_list_can_omit_records(response):
+    api = AsyncMock()
+    api.request.return_value = response
+    assert await cleanup.collect_panels(api, ("group",), AsyncMock()) == []
+    api.request.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"is_end": False},
+        {"is_end": True, "next_cursor": "more-data"},
+        {},
+    ],
+)
+async def test_missing_records_without_explicit_end_is_still_rejected(response):
+    api = AsyncMock()
+    api.request.return_value = response
+    with pytest.raises(cleanup.PanelError):
+        await cleanup.collect_panels(api, ("group",), AsyncMock())
