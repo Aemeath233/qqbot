@@ -1,11 +1,14 @@
 import importlib.util
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
+from qqbot.config import Settings
 from qqbot.dorm_state import UserContext
+from qqbot.inbox import Inbox
 from qqbot.operation_log import OperationLog
 
 spec = importlib.util.spec_from_file_location(
@@ -110,3 +113,50 @@ def test_operation_retention_prunes_old_and_excess_records(tmp_path, monkeypatch
             "third",
         ]
         assert db.execute("SELECT COUNT(*) FROM interaction_receipts").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        [],
+        ["--operations"],
+        ["--operations", "--trace", "0123456789"],
+        ["--operations", "--user", inspection.tag("private-user")],
+        ["--operations", "--group", inspection.tag("private-group")],
+    ],
+)
+def test_report_cli_with_omitted_optional_filters(tmp_path, monkeypatch, capsys, flags):
+    path = tmp_path / "events.sqlite3"
+    inbox = Inbox(path)
+    OperationLog(inbox.db).record(
+        "query_started",
+        UserContext("groups", "private-group", "private-user"),
+        trace="0123456789",
+        dormitory="33#4032",
+    )
+    inbox.close()
+    before = path.read_bytes()
+    monkeypatch.setattr(sys, "argv", ["inspect_electricity_events.py", *flags, "--hours", "24"])
+    monkeypatch.setattr(
+        inspection.Settings,
+        "load",
+        lambda **kwargs: Settings("", "", db_path=path),
+    )
+    inspection.main()
+    output = capsys.readouterr()
+    assert "只读查看" in output.out
+    assert output.err == ""
+    if "--operations" in flags:
+        assert "query_started" in output.out
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("option", ["--trace", "--user", "--group"])
+@pytest.mark.parametrize("value", ["", "invalid"])
+def test_report_cli_still_rejects_explicit_invalid_fingerprints(monkeypatch, option, value):
+    monkeypatch.setattr(
+        sys, "argv", ["inspect_electricity_events.py", "--operations", option, value]
+    )
+    with pytest.raises(SystemExit) as error:
+        inspection.main()
+    assert error.value.code == 2

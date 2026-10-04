@@ -109,9 +109,10 @@ def main():
     parser.add_argument(
         "--operations", action="store_true", help="查看详细操作审计（升级后开始记录）"
     )
-    parser.add_argument("--trace", type=fingerprint, default="", help="按追踪号筛选详细操作")
-    parser.add_argument("--user", type=fingerprint, default="", help="按用户指纹筛选详细操作")
-    parser.add_argument("--group", type=fingerprint, default="", help="按群/私聊指纹筛选详细操作")
+    # argparse 会把字符串默认值也交给 type 校验；未提供筛选必须使用 None。
+    parser.add_argument("--trace", type=fingerprint, default=None, help="按追踪号筛选详细操作")
+    parser.add_argument("--user", type=fingerprint, default=None, help="按用户指纹筛选详细操作")
+    parser.add_argument("--group", type=fingerprint, default=None, help="按群/私聊指纹筛选详细操作")
     parser.add_argument(
         "--show-ids", action="store_true", help="详细操作中显示本地保存的平台 OpenID"
     )
@@ -125,9 +126,9 @@ def main():
                 settings.db_path,
                 hours=args.hours,
                 limit=args.limit,
-                trace=args.trace,
-                user=args.user,
-                group=args.group,
+                trace=args.trace or "",
+                user=args.user or "",
+                group=args.group or "",
                 show_ids=args.show_ids,
             )
             if args.operations
