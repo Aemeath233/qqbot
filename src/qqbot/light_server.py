@@ -10,7 +10,7 @@ from contextlib import suppress
 import aiohttp
 from aiohttp import web
 
-from qqbot.api import DryRunAPI, QQAPI, QQAPIError
+from qqbot.api import QQAPI, QQAPIError
 from qqbot.config import Settings
 from qqbot.inbox import INTERRUPTED_REPLY, Inbox, InboxFull
 from qqbot.light_assistant import LightAssistant
@@ -42,7 +42,9 @@ class Runtime:
                         job = self.inbox.next(excluded_contexts=contexts, prepared=prepared)
                         if job is None:
                             break
-                        task = asyncio.create_task(self.process(job), name="qqbot-electricity-reply")
+                        task = asyncio.create_task(
+                            self.process(job), name="qqbot-electricity-reply"
+                        )
                         self.active[job["key"]] = (job["conversation_key"], prepared, task)
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.wakeup.wait(), timeout=0.5)
@@ -69,8 +71,6 @@ class Runtime:
                             content = await self.assistant.generate(
                                 job["task_kind"],
                                 job["task_payload"],
-                                job["conversation_key"],
-                                request_id=job["key"],
                             )
                     except TimeoutError:
                         content = "处理超时，执行结果可能未知；本次不会自动重试，请先核对实际状态。"
@@ -81,16 +81,18 @@ class Runtime:
             if time.time() >= job["expires_at"]:
                 self.inbox.failed(job["key"], job["attempts"], retry=False)
                 return
-            await self.api.send_text(
-                job["kind"], job["target_id"], job["message_id"], content
-            )
+            await self.api.send_text(job["kind"], job["target_id"], job["message_id"], content)
         except (QQAPIError, aiohttp.ClientError, TimeoutError) as exc:
             attempts = job["attempts"] + 1
             retryable = not isinstance(exc, QQAPIError) or exc.retryable
             retry = retryable and attempts < 4
             self.inbox.failed(job["key"], attempts, retry=retry)
-            logger.warning("回复%s，尝试次数=%d：%s", "稍后重试" if retry else "失败", attempts,
-                           str(exc) if isinstance(exc, QQAPIError) else type(exc).__name__)
+            logger.warning(
+                "回复%s，尝试次数=%d：%s",
+                "稍后重试" if retry else "失败",
+                attempts,
+                str(exc) if isinstance(exc, QQAPIError) else type(exc).__name__,
+            )
         except Exception as exc:
             logger.error("后台任务异常：%s", type(exc).__name__)
             self.inbox.failed(job["key"], job["attempts"] + 1, retry=False)
@@ -110,7 +112,7 @@ async def health(request: web.Request):
     runtime = request.app[RUNTIME]
     healthy = runtime.worker is not None and not runtime.worker.done()
     return web.json_response(
-        {"status": "ok" if healthy else "error", "mode": "dry-run" if runtime.settings.dry_run else "live"},
+        {"status": "ok" if healthy else "error"},
         status=200 if healthy else 503,
     )
 
@@ -137,9 +139,12 @@ async def webhook(request: web.Request):
             raise web.HTTPBadRequest(text="Invalid challenge")
         token, event_ts = data.get("plain_token"), data.get("event_ts")
         if not (
-            isinstance(token, str) and CHALLENGE_TOKEN.fullmatch(token)
-            and isinstance(event_ts, str) and 0 < len(event_ts) <= 32
-            and event_ts.isascii() and event_ts.isdigit()
+            isinstance(token, str)
+            and CHALLENGE_TOKEN.fullmatch(token)
+            and isinstance(event_ts, str)
+            and 0 < len(event_ts) <= 32
+            and event_ts.isascii()
+            and event_ts.isdigit()
         ):
             raise web.HTTPBadRequest(text="Invalid challenge")
         return web.json_response(runtime.signer.challenge(token, event_ts))
@@ -167,15 +172,13 @@ async def webhook(request: web.Request):
     return web.json_response({"op": 12, "d": 0})
 
 
-def create_app(settings: Settings, *, api=None, assistant=None):
+def create_app(settings: Settings):
     app = web.Application(client_max_size=1024 * 1024)
 
     async def lifespan(application):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            active_api = api if api is not None else (
-                DryRunAPI() if settings.dry_run else QQAPI(settings, session)
-            )
-            active_assistant = assistant if assistant is not None else LightAssistant(settings, session)
+            active_api = QQAPI(settings, session)
+            active_assistant = LightAssistant(settings, session)
             runtime = Runtime(settings, active_api, active_assistant)
             application[RUNTIME] = runtime
             runtime.worker = asyncio.create_task(runtime.work(), name="qqbot-electricity-worker")

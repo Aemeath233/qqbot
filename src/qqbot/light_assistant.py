@@ -63,13 +63,11 @@ class LightAssistant:
         self.model = ChatCompletionsClient(settings, session)
         self.electricity = ElectricityClient(settings, session)
 
-    async def generate(
-        self, task_kind: str, payload: str, _context: str = "", *, request_id: str = ""
-    ) -> str:
+    async def generate(self, task_kind: str, payload: str) -> str:
         if task_kind != "chat":
             return self._refusal()
         if not self.settings.llm_enabled:
-            return "自然语言查询尚未配置模型服务，请联系管理员。"
+            return "自然语言查询尚未配置模型服务，请在 .env 中填写 LLM_API_KEY 和 LLM_MODEL。"
         room_mentioned = ROOM_REFERENCE.search(payload) is not None
         if (
             not CURRENT_QUERY.search(payload)

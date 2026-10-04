@@ -1,7 +1,6 @@
 """把 QQ 消息送给唯一的电量查询助手。"""
 
-from dataclasses import dataclass
-
+from qqbot.commands import ReplyTask
 from qqbot.messages import Message
 
 HELP = (
@@ -10,12 +9,6 @@ HELP = (
     "也可以发送 /电费 33#2035。\n"
     "机器人只查当前剩余电量，不保存个人房间设置。"
 )
-
-
-@dataclass(frozen=True)
-class ReplyTask:
-    kind: str
-    content: str
 
 
 class LightCommandRouter:

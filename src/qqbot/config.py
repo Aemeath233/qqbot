@@ -1,24 +1,20 @@
-"""从 .env 和进程环境读取配置，进程环境优先。"""
+"""读取 QQ、模型和电费查询所需的 .env 配置。"""
 
-import json
 import math
 import os
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
-from qqbot.personas import LENGTHS, PRESETS
-
 
 class ConfigurationError(ValueError):
     pass
 
 
-def env_bool(name: str, default: bool = False, *, values: Mapping[str, str] | None = None) -> bool:
-    value = (os.environ if values is None else values).get(name, str(default)).strip().lower()
+def _boolean(name: str, default: bool) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
     if value not in {"true", "false"}:
         raise ConfigurationError(f"{name} 必须为 true 或 false")
     return value == "true"
@@ -33,7 +29,6 @@ class Settings:
     db_path: Path = Path("data/qqbot.sqlite3")
     accept_group_messages: bool = False
     log_level: str = "INFO"
-    dry_run: bool = False
     llm_enabled: bool = False
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = field(default="", repr=False)
@@ -51,212 +46,98 @@ class Settings:
     electricity_endpoint: str = (
         "https://cloudpaygateway.59wanmei.com/paygateway/smallpaygateway/trade"
     )
-    bot_name: str = "小电"
-    bot_persona: str = "cat"
-    bot_persona_custom: str = ""
-    bot_catchphrase: str = ""
-    bot_reply_length: str = "balanced"
-    bot_group_personas: dict[str, str] = field(default_factory=dict, repr=False)
-    memory_enabled: bool = True
-    games_enabled: bool = True
-    skills_enabled: bool = True
-    skills_dir: Path = Path("data/skills")
-    toolpacks_enabled: bool = True
-    toolpacks_dir: Path = Path("data/toolpacks")
-    access_path: Path = Path("data/access/policy.json")
-    portal_enabled: bool = False
-    public_base_url: str = ""
-    portal_db_path: Path = Path("data/portal.sqlite3")
-    curve_link_minutes: int = 60
-    page_visibility: str = "public"
-    electricity_history_enabled: bool = True
-    electricity_history_retention_days: int = 365
 
     @classmethod
-    def load(cls, *, dry_run: bool = False, require_qq: bool = True) -> "Settings":
-        load_dotenv(Path.cwd() / ".env", override=False, encoding="utf-8-sig", interpolate=False)
-        return cls.from_values(os.environ, dry_run=dry_run, require_qq=require_qq)
-
-    @classmethod
-    def from_values(
-        cls, values: Mapping[str, str], *, dry_run: bool = False, require_qq: bool = True
+    def load(
+        cls,
+        *,
+        require_qq: bool = True,
+        require_llm: bool = True,
     ) -> "Settings":
-        """校验给定配置，不修改进程环境；供管理页及连接测试使用。"""
-        app_id = values.get("QQ_APP_ID", "").strip()
-        secret = values.get("QQ_APP_SECRET", "").strip()
-        host = values.get("QQ_HOST", "127.0.0.1").strip()
-        if dry_run:
-            if host not in {"127.0.0.1", "localhost", "::1"}:
-                raise ConfigurationError("--dry-run 只允许本机监听，请将 QQ_HOST 设为 127.0.0.1")
-            app_id = app_id or "local-demo"
-            secret = secret or "local-demo-secret"
-        elif require_qq and (not app_id or not secret):
-            raise ConfigurationError("请在项目 .env 中填写 QQ_APP_ID 和 QQ_APP_SECRET，再启动服务")
+        load_dotenv(Path.cwd() / ".env", override=False, encoding="utf-8-sig", interpolate=False)
+        app_id = os.getenv("QQ_APP_ID", "").strip()
+        app_secret = os.getenv("QQ_APP_SECRET", "").strip()
+        if require_qq and (not app_id or not app_secret):
+            raise ConfigurationError("请在 .env 中填写 QQ_APP_ID 和 QQ_APP_SECRET。")
+
         try:
-            port = int(values.get("QQ_PORT", "8080"))
+            port = int(os.getenv("QQ_PORT", "8080"))
+            pay_project = int(os.getenv("ELECTRICITY_PAY_PROJECT", "953"))
+            llm_timeout = float(os.getenv("LLM_TIMEOUT", "30"))
         except ValueError:
-            raise ConfigurationError("QQ_PORT 必须是整数") from None
+            raise ConfigurationError(
+                "QQ_PORT、ELECTRICITY_PAY_PROJECT 或 LLM_TIMEOUT 配置无效。"
+            ) from None
         if not 1 <= port <= 65535:
-            raise ConfigurationError("QQ_PORT 必须在 1～65535 之间")
-        accept_group = env_bool("QQ_ACCEPT_GROUP_MESSAGES", values=values)
-        level = values.get("LOG_LEVEL", "INFO").strip().upper()
-        if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
-            raise ConfigurationError("LOG_LEVEL 应为 DEBUG、INFO、WARNING、ERROR 或 CRITICAL")
-        db_path = Path(values.get("QQ_DB_PATH", "data/qqbot.sqlite3"))
-        if dry_run:
-            db_path = db_path.with_name(f"{db_path.stem}.dry-run{db_path.suffix}")
-        llm_enabled = env_bool("LLM_ENABLED", values=values) and not dry_run
-        llm_base_url = values.get("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-        llm_api_key = values.get("LLM_API_KEY", "").strip()
-        llm_model = values.get("LLM_MODEL", "").strip()
-        if llm_enabled:
-            if not llm_api_key or not llm_model:
-                raise ConfigurationError("启用 LLM 时必须填写 LLM_API_KEY 和 LLM_MODEL")
-            url = urlsplit(llm_base_url)
-            if (
-                not url.hostname
-                or url.username
-                or url.password
-                or url.query
-                or url.fragment
-                or url.scheme not in {"https", "http"}
-                or (url.scheme == "http" and url.hostname not in {"127.0.0.1", "localhost", "::1"})
-            ):
-                raise ConfigurationError("LLM_BASE_URL 必须为 HTTPS 地址；本机服务可以使用 HTTP")
-        try:
-            llm_timeout = float(values.get("LLM_TIMEOUT", "30"))
-            pay_project = int(values.get("ELECTRICITY_PAY_PROJECT", "953"))
-        except ValueError:
-            raise ConfigurationError(
-                "LLM_TIMEOUT 必须为数字，ELECTRICITY_PAY_PROJECT 必须为整数"
-            ) from None
-        if not math.isfinite(llm_timeout) or not 1 <= llm_timeout <= 120 or pay_project <= 0:
-            raise ConfigurationError("LLM_TIMEOUT 应在 1～120 秒之间，缴费项目编号必须为正整数")
-        electricity_enabled = env_bool("ELECTRICITY_ENABLED", values=values) and not dry_run
-        school_code = values.get("ELECTRICITY_SCHOOL_CODE", "1402").strip()
-        map_path = values.get("ELECTRICITY_MAP_PATH", "").strip()
-        endpoint = values.get("ELECTRICITY_ENDPOINT", cls.electricity_endpoint).strip()
-        if electricity_enabled:
-            url = urlsplit(endpoint)
-            if (
-                not url.hostname
-                or url.scheme != "https"
-                or url.username
-                or url.password
-                or url.query
-                or url.fragment
-            ):
-                raise ConfigurationError("ELECTRICITY_ENDPOINT 必须是无凭证和查询参数的 HTTPS 地址")
-        if electricity_enabled and (not school_code or (school_code != "1402" and not map_path)):
-            raise ConfigurationError(
-                "其他学校必须配置对应的 ELECTRICITY_SCHOOL_CODE 和宿舍映射文件"
-            )
-        name = values.get("BOT_NAME", "小电").strip()
-        persona = values.get("BOT_PERSONA", "cat").strip()
-        custom = values.get("BOT_PERSONA_CUSTOM", "").strip()
-        catchphrase = values.get("BOT_CATCHPHRASE", "").strip()
-        length = values.get("BOT_REPLY_LENGTH", "balanced").strip()
+            raise ConfigurationError("QQ_PORT 必须为 1～65535 之间的端口。")
+        if pay_project <= 0:
+            raise ConfigurationError("ELECTRICITY_PAY_PROJECT 必须为正整数。")
+        if not math.isfinite(llm_timeout) or not 1 <= llm_timeout <= 120:
+            raise ConfigurationError("LLM_TIMEOUT 必须在 1～120 秒之间。")
+
+        log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ConfigurationError("LOG_LEVEL 配置无效。")
+        llm_enabled = _boolean("LLM_ENABLED", False)
+        llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+        llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+        llm_model = os.getenv("LLM_MODEL", "").strip()
+        if llm_enabled and require_llm and (not llm_api_key or not llm_model):
+            raise ConfigurationError("自然语言查询需要填写 LLM_API_KEY 和 LLM_MODEL。")
+        llm_enabled = llm_enabled and bool(llm_api_key and llm_model)
+        llm_url = urlsplit(llm_base_url)
         if (
-            not 1 <= len(name) <= 32
-            or any(ord(c) < 32 for c in name)
-            or persona not in PRESETS
-            or length not in LENGTHS
-            or len(custom) > 2000
-            or any(ord(c) < 32 and c not in "\r\n\t" for c in custom)
-            or len(catchphrase) > 80
-            or any(ord(c) < 32 for c in catchphrase)
+            not llm_url.hostname
+            or llm_url.username
+            or llm_url.password
+            or llm_url.query
+            or llm_url.fragment
+            or llm_url.scheme not in {"http", "https"}
+            or (
+                llm_url.scheme == "http"
+                and llm_url.hostname not in {"localhost", "127.0.0.1", "::1"}
+            )
         ):
-            raise ConfigurationError(
-                "请检查机器人名称、人设、回复长度或口头禅；自定义人设最多2000字。"
-            )
-        group_text = values.get("BOT_GROUP_PERSONAS", "{}").strip() or "{}"
-        try:
-            groups = json.loads(group_text)
-            if (
-                len(group_text) > 8000
-                or not isinstance(groups, dict)
-                or len(groups) > 200
-                or any(
-                    not isinstance(k, str)
-                    or not k.strip()
-                    or len(k) > 512
-                    or not isinstance(v, str)
-                    or v not in PRESETS
-                    for k, v in groups.items()
-                )
-            ):
-                raise ValueError
-        except (ValueError, TypeError, RecursionError):
-            raise ConfigurationError(
-                "BOT_GROUP_PERSONAS 应为群标识到cat/friend/gentle/custom的JSON对象。"
-            ) from None
-        if (persona == "custom" or "custom" in groups.values()) and not custom:
-            raise ConfigurationError("使用自定义人格时请填写 BOT_PERSONA_CUSTOM。")
-        try:
-            retention = int(values.get("ELECTRICITY_HISTORY_RETENTION_DAYS", "365"))
-        except ValueError:
-            raise ConfigurationError("历史保留天数必须为1～3650的整数。") from None
-        if not 1 <= retention <= 3650:
-            raise ConfigurationError("历史保留天数必须为1～3650的整数。")
-        portal_enabled = env_bool("PORTAL_ENABLED", values=values) and not dry_run
-        public_base_url = values.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
-        if public_base_url:
-            try:
-                url = urlsplit(public_base_url)
-            except ValueError:
-                raise ConfigurationError("公开域名格式无效。") from None
-            if (
-                not url.hostname
-                or url.username
-                or url.password
-                or url.query
-                or url.fragment
-                or url.path
-                or (
-                    url.scheme != "https"
-                    and not (
-                        url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
-                    )
-                )
-            ):
-                raise ConfigurationError("PUBLIC_BASE_URL应为HTTPS域名根地址；本机测试可使用HTTP。")
-            try:
-                if len(public_base_url) > 512 or any(ord(char) < 32 for char in public_base_url):
-                    raise ValueError
-                hostname = url.hostname.encode("idna").decode("ascii")
-                port = url.port
-            except (ValueError, UnicodeError):
-                raise ConfigurationError("公开域名或端口格式无效。") from None
-            hostname = f"[{hostname}]" if ":" in hostname else hostname
-            authority = (
-                hostname
-                if port in {None, 443 if url.scheme == "https" else 80}
-                else f"{hostname}:{port}"
-            )
-            public_base_url = f"{url.scheme}://{authority}"
-        if portal_enabled and not public_base_url:
-            raise ConfigurationError("启用用户网页前请填写PUBLIC_BASE_URL。")
-        try:
-            curve_minutes = int(values.get("CURVE_LINK_MINUTES", "60"))
-        except ValueError:
-            raise ConfigurationError("曲线访问链接有效期应为30或60分钟。") from None
-        if curve_minutes not in {30, 60}:
-            raise ConfigurationError("曲线访问链接有效期应为30或60分钟。")
-        visibility = values.get("PAGE_VISIBILITY", "public")
-        if visibility not in {"public", "unlisted"}:
-            raise ConfigurationError("网页发布方式应为public或unlisted。")
-        portal_path = Path(values.get("PORTAL_DB_PATH", "data/portal.sqlite3"))
-        if dry_run:
-            portal_path = portal_path.with_name(f"{portal_path.stem}.dry-run{portal_path.suffix}")
+            raise ConfigurationError("LLM_BASE_URL 必须是 HTTPS 地址；本机模型可使用 HTTP。")
+
+        electricity_enabled = _boolean("ELECTRICITY_ENABLED", False)
+        school_code = os.getenv("ELECTRICITY_SCHOOL_CODE", "1402").strip()
+        map_value = os.getenv("ELECTRICITY_MAP_PATH", "").strip()
+        endpoint = os.getenv(
+            "ELECTRICITY_ENDPOINT",
+            "https://cloudpaygateway.59wanmei.com/paygateway/smallpaygateway/trade",
+        ).strip()
+        endpoint_url = urlsplit(endpoint)
+        if (
+            not endpoint_url.hostname
+            or endpoint_url.scheme != "https"
+            or endpoint_url.username
+            or endpoint_url.password
+            or endpoint_url.query
+            or endpoint_url.fragment
+        ):
+            raise ConfigurationError("ELECTRICITY_ENDPOINT 必须是无凭证和查询参数的 HTTPS 地址。")
+        if not school_code.isascii() or not school_code.isdigit() or len(school_code) > 20:
+            raise ConfigurationError("ELECTRICITY_SCHOOL_CODE 配置无效。")
+        if electricity_enabled and school_code != "1402" and not map_value:
+            raise ConfigurationError("其他学校需要配置 ELECTRICITY_MAP_PATH。")
+
+        credentials = [
+            os.getenv(name, "").strip()
+            for name in ("ELECTRICITY_TOKEN", "ELECTRICITY_COOKIE", "ELECTRICITY_TAPP_ID")
+        ]
+        if any(len(value) > 16384 or "\n" in value or "\r" in value for value in credentials):
+            raise ConfigurationError("电费会话配置不能包含换行或超长请求头。")
+
+        db_path = Path(os.getenv("QQ_DB_PATH", "data/qqbot.sqlite3"))
         return cls(
             app_id=app_id,
-            app_secret=secret,
-            host=host,
+            app_secret=app_secret,
+            host=os.getenv("QQ_HOST", "127.0.0.1").strip(),
             port=port,
             db_path=db_path,
-            accept_group_messages=accept_group,
-            log_level=level,
-            dry_run=dry_run,
+            accept_group_messages=_boolean("QQ_ACCEPT_GROUP_MESSAGES", False),
+            log_level=log_level,
             llm_enabled=llm_enabled,
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
@@ -265,35 +146,13 @@ class Settings:
             electricity_enabled=electricity_enabled,
             electricity_school_code=school_code,
             electricity_pay_project=pay_project,
-            electricity_map_path=Path(map_path) if map_path else None,
-            electricity_token=values.get("ELECTRICITY_TOKEN", "").strip(),
-            electricity_cookie=values.get("ELECTRICITY_COOKIE", "").strip(),
-            electricity_tapp_id=values.get("ELECTRICITY_TAPP_ID", "").strip(),
-            electricity_default_area=values.get("ELECTRICITY_DEFAULT_AREA", "").strip(),
+            electricity_map_path=Path(map_value) if map_value else None,
+            electricity_token=credentials[0],
+            electricity_cookie=credentials[1],
+            electricity_tapp_id=credentials[2],
+            electricity_default_area=os.getenv("ELECTRICITY_DEFAULT_AREA", "").strip(),
             electricity_cooldown_path=Path(
-                values.get("ELECTRICITY_COOLDOWN_PATH", "data/electricity-test/cooldown.sqlite3")
+                os.getenv("ELECTRICITY_COOLDOWN_PATH", "data/electricity-test/cooldown.sqlite3")
             ),
             electricity_endpoint=endpoint,
-            bot_name=name,
-            bot_persona=persona,
-            bot_persona_custom=custom,
-            bot_catchphrase=catchphrase,
-            bot_reply_length=length,
-            bot_group_personas=groups,
-            memory_enabled=env_bool("MEMORY_ENABLED", True, values=values),
-            games_enabled=env_bool("GAMES_ENABLED", True, values=values),
-            skills_enabled=env_bool("SKILLS_ENABLED", True, values=values),
-            skills_dir=Path(values.get("SKILLS_DIR", "data/skills")),
-            toolpacks_enabled=env_bool("TOOLPACKS_ENABLED", True, values=values),
-            toolpacks_dir=Path(values.get("TOOLPACKS_DIR", "data/toolpacks")),
-            access_path=Path(values.get("ACCESS_POLICY_PATH", "data/access/policy.json")),
-            portal_enabled=portal_enabled,
-            public_base_url=public_base_url,
-            portal_db_path=portal_path,
-            curve_link_minutes=curve_minutes,
-            page_visibility=visibility,
-            electricity_history_enabled=env_bool(
-                "ELECTRICITY_HISTORY_ENABLED", True, values=values
-            ),
-            electricity_history_retention_days=retention,
         )

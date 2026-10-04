@@ -15,10 +15,7 @@ class ChatCompletionsClient:
         self.session = session
 
     async def complete(self, messages: list[dict], tools: list[dict]) -> dict:
-        budget = (
-            6000 if any(tool["function"]["name"] == "create_webpage" for tool in tools) else 800
-        )
-        body = {"model": self.settings.llm_model, "messages": messages, "max_tokens": budget}
+        body = {"model": self.settings.llm_model, "messages": messages, "max_tokens": 800}
         if tools:
             body.update(tools=tools, tool_choice="auto")
         try:
@@ -45,7 +42,7 @@ class ChatCompletionsClient:
             raise LLMError("模型文本格式异常")
         calls = message.get("tool_calls")
         if calls is not None:
-            if not isinstance(calls, list) or len(calls) > 4:
+            if not isinstance(calls, list) or len(calls) > 1:
                 raise LLMError("模型工具调用格式异常或数量过多")
             ids = set()
             for call in calls:

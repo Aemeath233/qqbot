@@ -87,12 +87,3 @@ def test_conflicting_and_invalid_directory(tmp_path):
     path.write_text("19#312=bad-url\n", encoding="utf-8")
     with pytest.raises(DormError):
         DormDirectory.load(path)
-
-
-def test_export_can_roundtrip_and_does_not_overwrite(tmp_path):
-    original = DormDirectory.load()
-    path = tmp_path / "out.json"
-    original.export(path)
-    assert DormDirectory.load(path).resolve("33#4032") == original.resolve("33#4032")
-    with pytest.raises(ValueError, match="已存在"):
-        original.export(path)

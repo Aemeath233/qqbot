@@ -48,8 +48,10 @@ class ElectricityClient:
         self._lock = asyncio.Lock()
 
     async def query(self, dormitory: str, area: str = "") -> dict:
-        if not self.settings.electricity_enabled or self.settings.dry_run:
-            raise ElectricityError("电费查询尚未启用，请联系管理员。", "disabled")
+        if not self.settings.electricity_enabled:
+            raise ElectricityError(
+                "电费查询尚未启用，请在 .env 中设置 ELECTRICITY_ENABLED=true。", "disabled"
+            )
         try:
             if self.directory is None:
                 self.directory = DormDirectory.load(self.settings.electricity_map_path)
@@ -134,7 +136,7 @@ class ElectricityClient:
                     )
                 if response.status in {401, 403}:
                     raise ElectricityError(
-                        "电费查询会话失效，请联系管理员检查登录状态。", "auth_failed"
+                        "电费查询会话失效，请在 .env 中更新校园登录会话。", "auth_failed"
                     )
                 if response.status != 200:
                     raise ElectricityError("电费服务暂时不可用，请稍后重试。", "upstream_error")
@@ -155,17 +157,16 @@ class ElectricityClient:
             "unit": "度",
             "queried_at": datetime.now(SHANGHAI).strftime("%Y-%m-%d %H:%M:%S"),
             "cached": False,
-            "_observed_at": time.time(),
         }
 
 
 def parse_electricity_quantity(data: object) -> str:
     """机器人与诊断脚本共用的业务状态、单位和电量校验。"""
     if not isinstance(data, dict) or data.get("returncode") != "SUCCESS":
-        raise ElectricityError("电费服务查询失败，请核对宿舍或联系管理员。", "business_error")
+        raise ElectricityError("电费服务查询失败，请核对宿舍编号或接口会话。", "business_error")
     business = data.get("businessData")
     if not isinstance(business, dict) or business.get("quantityunit") != "度":
-        raise ElectricityError("电费服务返回的电量格式异常，请联系管理员。", "invalid_quantity")
+        raise ElectricityError("电费服务返回的电量格式异常，请检查接口配置。", "invalid_quantity")
     quantity = business.get("quantity")
     try:
         if isinstance(quantity, bool) or not isinstance(quantity, (str, int, float)):
@@ -181,7 +182,7 @@ def parse_electricity_quantity(data: object) -> str:
             raise ValueError
     except (ValueError, InvalidOperation):
         raise ElectricityError(
-            "电费服务返回的电量数值异常，请联系管理员。", "invalid_quantity"
+            "电费服务返回的电量数值异常，请检查接口配置。", "invalid_quantity"
         ) from None
     return format(amount, "f")
 
@@ -194,5 +195,4 @@ def format_electricity(result: dict) -> str:
         f"宿舍 {result['dormitory']} 剩余电量：{result['remaining_kwh']} 度{source}\n"
         + (f"区域：{result['area_name']}\n" if result.get("area_name") else "")
         + f"查询时间：{result['queried_at']}（北京时间）"
-        + ("\n" + result["history_warning"] if result.get("history_warning") else "")
     )

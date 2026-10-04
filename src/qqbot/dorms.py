@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
@@ -40,13 +40,13 @@ class DormDirectory:
             identity = (record.area, record.building, record.room)
             if identity in seen:
                 if seen[identity] != record:
-                    raise DormError("宿舍目录存在冲突，请联系管理员。", "conflicting_map")
+                    raise DormError("宿舍目录存在冲突，请检查映射文件。", "conflicting_map")
                 continue
             seen[identity] = record
             for room in set((record.room, *record.aliases)):
                 self.index.setdefault((record.building, room), []).append(record)
         if not self.index:
-            raise DormError("宿舍目录为空，请联系管理员。", "invalid_map")
+            raise DormError("宿舍目录为空，请检查映射文件。", "invalid_map")
 
     @classmethod
     def load(cls, path: Path | None = None):
@@ -57,7 +57,7 @@ class DormDirectory:
                 else files("qqbot").joinpath("resources/dorm_map.txt").read_text(encoding="utf-8")
             )
         except (OSError, UnicodeError):
-            raise DormError("宿舍目录无法读取，请联系管理员。", "map_unavailable") from None
+            raise DormError("宿舍目录无法读取，请检查路径和文件权限。", "map_unavailable") from None
         rooms = []
         if path is not None and path.suffix.lower() == ".json":
             try:
@@ -93,18 +93,18 @@ class DormDirectory:
                         DormRoom(area, area_name, building, room, roomverify, tuple(aliases))
                     )
             except (ValueError, KeyError, TypeError):
-                raise DormError("宿舍 JSON 目录格式错误，请联系管理员。", "invalid_map") from None
+                raise DormError("宿舍 JSON 目录格式错误，请检查映射文件。", "invalid_map") from None
         else:
             for line in content.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 if line.count("=") != 1:
-                    raise DormError("宿舍映射文件格式错误，请联系管理员。", "invalid_map")
+                    raise DormError("宿舍映射文件格式错误，请检查映射文件。", "invalid_map")
                 label, roomverify = (part.strip() for part in line.split("=", 1))
                 match = DORM_PATTERN.fullmatch(label)
                 if match is None or not re.fullmatch(r"[0-9-]{1,80}", roomverify):
-                    raise DormError("宿舍映射文件格式错误，请联系管理员。", "invalid_map")
+                    raise DormError("宿舍映射文件格式错误，请检查映射文件。", "invalid_map")
                 area = roomverify.split("-", 1)[0]
                 rooms.append(
                     DormRoom(area, AREA_NAMES.get(area, area), *match.groups(), roomverify)
@@ -132,7 +132,7 @@ class DormDirectory:
             ]
         if not candidates:
             raise DormError(
-                "没有匹配到这个宿舍。请核对区域、楼号和房号；旧编号需要管理员配置对应别名。",
+                "没有匹配到这个宿舍。请核对区域、楼号和房号；旧编号需在映射文件中配置别名。",
                 "dorm_not_found",
             )
         if len(candidates) > 1:
@@ -147,12 +147,3 @@ class DormDirectory:
                 choices,
             )
         return candidates[0]
-
-    def export(self, path: Path):
-        if path.suffix.lower() != ".json":
-            raise ValueError("宿舍目录输出路径必须以 .json 结尾")
-        if path.exists():
-            raise ValueError("输出文件已存在，请选择新的文件名")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"rooms": [asdict(room) for room in self.rooms]}
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

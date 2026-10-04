@@ -1,7 +1,6 @@
 """QQ OpenAPI：统一域名、Access Token 缓存、明确的业务错误处理。"""
 
 import asyncio
-import logging
 import math
 import time
 from typing import Any
@@ -12,9 +11,6 @@ import aiohttp
 from qqbot.config import Settings
 
 API_BASE = "https://api.bot.qq.com"
-logger = logging.getLogger(__name__)
-
-
 class QQAPIError(Exception):
     def __init__(self, status: int, code: Any = None, trace_id: Any = None):
         self.status = status
@@ -108,11 +104,3 @@ class QQAPI:
 
     async def me(self):
         return await self.request("GET", "/users/@me")
-
-
-class DryRunAPI:
-    async def send_text(
-        self, kind: str, target_id: str, message_id: str, content: str, *, msg_seq: int = 1
-    ):
-        logger.info("[本地模拟] %s 回复：%s", kind, content)
-        return {"id": "dry-run"}

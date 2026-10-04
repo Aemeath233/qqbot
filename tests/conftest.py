@@ -13,10 +13,6 @@ def settings(tmp_path):
         "test-app",
         "test-secret",
         db_path=tmp_path / "inbox.sqlite3",
-        skills_dir=tmp_path / "skills",
-        toolpacks_dir=tmp_path / "toolpacks",
-        access_path=tmp_path / "access.json",
-        portal_db_path=tmp_path / "portal.sqlite3",
         electricity_cooldown_path=tmp_path / "cooldown.sqlite3",
     )
 

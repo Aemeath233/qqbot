@@ -1,5 +1,0 @@
-# 管理域名应指向服务器，并加入 .env 的 ADMIN_ALLOWED_HOSTS。
-# 此配置与机器人 bot.example.com 的回调配置分别维护。
-admin.example.com {
-    reverse_proxy 127.0.0.1:8081
-}
