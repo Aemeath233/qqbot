@@ -30,6 +30,51 @@ class PanelError(Exception):
     pass
 
 
+def response_structure(value, depth=0):
+    """只显示字段名、类型、列表长度及错误码，不显示原始字符串或 OpenID。"""
+    if isinstance(value, dict):
+        if depth >= 3:
+            return {"type": "object", "fields": len(value)}
+        result = {}
+        for key, item in list(value.items())[:30]:
+            name = str(key)[:80]
+            if name in {"code", "err_code", "error_code", "ret"} and (
+                type(item) is int or (isinstance(item, str) and item.isdigit() and len(item) <= 12)
+            ):
+                result[name] = item
+            else:
+                result[name] = response_structure(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "length": len(value),
+            "first_structure": response_structure(value[0], depth + 1) if value else None,
+        }
+    return type(value).__name__
+
+
+def unwrap_response(response, required_key):
+    """接受文档格式或常见的 data/result/d 对象包装，不猜未知结构。"""
+    current = response
+    for _ in range(4):
+        if not isinstance(current, dict):
+            break
+        for key in ("err_code", "code"):
+            if key in current and str(current[key]) != "0":
+                raise QQAPIError(200, current[key])
+        if required_key in current:
+            return current
+        wrapped = next(
+            (current[key] for key in ("data", "result", "d") if isinstance(current.get(key), dict)),
+            None,
+        )
+        if wrapped is None:
+            break
+        current = wrapped
+    return None
+
+
 class RequestPacer:
     def __init__(self):
         self.last = {}
@@ -52,10 +97,20 @@ async def collect_panels(api, scopes, pacer):
             if cursor:
                 params["cursor"] = cursor
             await pacer.wait("read")
-            page = await api.request("GET", "/v2/panels?" + urlencode(params))
+            response = await api.request("GET", "/v2/panels?" + urlencode(params))
+            page = unwrap_response(response, "records")
+            if page is None:
+                structure = json.dumps(response_structure(response), ensure_ascii=False)
+                raise PanelError(
+                    f"场景 {scope} 的接口未返回可识别的 records 列表；未执行删除。"
+                    f"响应结构（不含字符串值）：{structure}"
+                )
             items = page.get("records")
             if not isinstance(items, list):
-                raise PanelError("指令面板列表响应格式异常；未执行删除。")
+                structure = json.dumps(response_structure(response), ensure_ascii=False)
+                raise PanelError(
+                    f"场景 {scope} 的 records 不是列表；未执行删除。响应结构：{structure}"
+                )
             for item in items:
                 if not isinstance(item, dict):
                     raise PanelError("面板记录格式异常；未执行删除。")
@@ -83,8 +138,9 @@ async def clear_panels(api, records, pacer, *, backup_dir):
     details = []
     for record in records:
         await pacer.wait("read")
-        detail = await api.request("GET", "/v2/panels/" + quote(record["panel_id"], safe=""))
-        if detail.get("panel_id") != record["panel_id"]:
+        response = await api.request("GET", "/v2/panels/" + quote(record["panel_id"], safe=""))
+        detail = unwrap_response(response, "panel_id")
+        if detail is None or detail.get("panel_id") != record["panel_id"]:
             raise PanelError("面板详情 ID 不一致；未执行删除。")
         details.append(detail)
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +153,11 @@ async def clear_panels(api, records, pacer, *, backup_dir):
     for record in records:
         await pacer.wait("delete")
         try:
-            await api.request("DELETE", "/v2/panels/" + quote(record["panel_id"], safe=""))
+            response = await api.request(
+                "DELETE", "/v2/panels/" + quote(record["panel_id"], safe="")
+            )
+            # 删除响应没有业务字段；检查包装层错误码，不把它误报为删除成功。
+            unwrap_response(response, "unused_delete_result")
         except QQAPIError as exc:
             if exc.code != "40030006":
                 # 一旦失败即停止，不对其他面板继续盲目删除，也不自动重试。
@@ -152,7 +212,7 @@ def main():
             if isinstance(exc, (ConfigurationError, PanelError, QQAPIError))
             else type(exc).__name__
         )
-        print(f"清理未完成：{detail}。请查看上方输出确认是否已删除部分面板。", file=sys.stderr)
+        print(f"清理未完成：{detail}\n请查看上方输出确认是否已删除部分面板。", file=sys.stderr)
         raise SystemExit(1) from None
     except KeyboardInterrupt:
         print("已中断；部分面板可能已被删除，备份保存在 data/qq-panels-backup。", file=sys.stderr)

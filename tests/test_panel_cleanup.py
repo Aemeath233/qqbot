@@ -78,3 +78,53 @@ async def test_empty_success_response_is_supported(settings):
     response.status = 204
     assert await cleanup.PanelAPI(settings, None)._decode(response) == {}
     response.json.assert_not_awaited()
+
+
+@pytest.mark.parametrize("key", ["data", "result", "d"])
+async def test_wrapped_list_is_supported(key):
+    api = AsyncMock()
+    api.request.return_value = {
+        "code": 0,
+        key: {"records": [{"panel_id": "one", "scope": "group"}], "is_end": True},
+    }
+    records = await cleanup.collect_panels(api, ("group",), AsyncMock())
+    assert records[0]["panel_id"] == "one"
+    assert api.request.await_count == 1
+
+
+async def test_unknown_response_reports_structure_not_values():
+    api = AsyncMock()
+    api.request.return_value = {
+        "data": {"unexpected": "secret-openid", "access_token": "private-token"},
+        "message": "secret-provider-message",
+    }
+    with pytest.raises(cleanup.PanelError) as caught:
+        await cleanup.collect_panels(api, ("group",), AsyncMock())
+    assert "场景 group" in str(caught.value)
+    assert "unexpected" in str(caught.value)
+    assert "secret-openid" not in str(caught.value)
+    assert "private-token" not in str(caught.value)
+    assert "secret-provider-message" not in str(caught.value)
+    assert api.request.await_count == 1
+
+
+async def test_wrapped_business_error_is_not_an_empty_list():
+    api = AsyncMock()
+    api.request.return_value = {"data": {"code": 11253, "message": "secret error"}}
+    with pytest.raises(QQAPIError) as caught:
+        await cleanup.collect_panels(api, ("group",), AsyncMock())
+    assert caught.value.code == "11253"
+    assert "secret error" not in str(caught.value)
+
+
+async def test_wrapped_detail_and_delete_error_are_handled(tmp_path):
+    api = AsyncMock()
+    api.request.side_effect = [
+        {"data": {"panel_id": "one", "group_openids": ["private-group"]}},
+        {"data": {"code": 11253}},
+    ]
+    with pytest.raises(cleanup.PanelError, match="已删除 0"):
+        await cleanup.clear_panels(
+            api, [{"panel_id": "one", "scope": "group"}], AsyncMock(), backup_dir=tmp_path
+        )
+    assert len(list(tmp_path.glob("*.json"))) == 1
