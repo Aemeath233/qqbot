@@ -21,8 +21,18 @@ async def check_qq(settings: Settings, *, websocket: bool = False):
         api = QQAPI(settings, session)
         if websocket:
             async with asyncio.timeout(45):
-                await Gateway(api, lambda payload: None).connect(check_only=True)
-            print("QQ WebSocket 鉴权成功，群 @ 消息和私聊订阅成功；未查询电费。")
+                gateway = Gateway(api, lambda payload: None)
+                initial_buttons = api.buttons_enabled
+                try:
+                    await gateway.connect(check_only=True)
+                except GatewayReconnect:
+                    if initial_buttons and not api.buttons_enabled:
+                        await asyncio.sleep(5)
+                        await gateway.connect(check_only=True)
+                    else:
+                        raise
+            buttons = "按钮事件已订阅" if api.buttons_enabled else "按钮已关闭"
+            print(f"QQ WebSocket 鉴权成功，群 @ 消息和私聊订阅成功；{buttons}；未查询电费。")
             return
         user = await api.me()
     print(

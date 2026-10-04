@@ -1,6 +1,7 @@
 """QQ WebSocket：Access Token 鉴权、心跳、会话恢复和限速重连。"""
 
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ from qqbot.inbox import InboxFull
 
 logger = logging.getLogger(__name__)
 GROUP_AND_C2C_INTENT = 1 << 25
+INTERACTION_INTENT = 1 << 26
 FATAL_CLOSE_CODES = {
     4001: "网关拒绝了操作码",
     4002: "网关拒绝了消息格式",
@@ -147,7 +149,12 @@ class Gateway:
                         "op": 2,
                         "d": {
                             "token": f"QQBot {token}",
-                            "intents": GROUP_AND_C2C_INTENT,
+                            "intents": GROUP_AND_C2C_INTENT
+                            | (
+                                INTERACTION_INTENT
+                                if getattr(self.api, "buttons_enabled", False)
+                                else 0
+                            ),
                             "shard": [0, 1],
                         },
                     }
@@ -213,7 +220,9 @@ class Gateway:
                         logger.info("QQ WebSocket 会话已恢复")
                     else:
                         try:
-                            self.on_event(payload)
+                            handled = self.on_event(payload)
+                            if inspect.isawaitable(handled):
+                                await handled
                         except (ValueError, TypeError):
                             logger.warning("忽略格式无效的 QQ 消息事件")
                     # 消息持久化成功后才推进序号；队列满时留给 RESUME 补发。
@@ -235,6 +244,11 @@ class Gateway:
                 raise GatewayReconnect("网关消息格式无效")
             return payload
         code = socket.close_code
+        if code in {4013, 4014} and getattr(self.api, "buttons_enabled", False):
+            self.api.buttons_enabled = False
+            self.reset_session()
+            logger.warning("QQ 未允许按钮事件订阅，已关闭按钮，重新连接基础消息")
+            raise GatewayReconnect("按钮事件权限不足，改用基础消息订阅")
         if code in FATAL_CLOSE_CODES:
             raise GatewayFatalError(f"{FATAL_CLOSE_CODES[code]}（网关关闭码 {code}）。")
         if code in {4006, 4007} or (code is not None and 4900 <= code <= 4913):

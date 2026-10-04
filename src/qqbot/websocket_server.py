@@ -17,7 +17,7 @@ async def serve_websocket(settings):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
         api = QQAPI(settings, session)
         runtime = Runtime(settings, api, LightAssistant(settings, session))
-        gateway = Gateway(api, runtime.accept_event)
+        gateway = Gateway(api, runtime.handle_event)
         runtime.worker = asyncio.create_task(runtime.work(), name="qqbot-electricity-worker")
         connection = asyncio.create_task(gateway.run(), name="qqbot-websocket")
         logger.info("电费机器人使用 WebSocket，无需配置域名或消息回调")

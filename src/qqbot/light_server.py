@@ -69,7 +69,7 @@ async def webhook(request: web.Request):
     if runtime.worker is None or runtime.worker.done():
         raise web.HTTPServiceUnavailable(text="Worker unavailable")
     try:
-        runtime.accept_event(payload)
+        await runtime.handle_event(payload)
     except (ValueError, TypeError):
         raise web.HTTPBadRequest(text="Invalid message event") from None
     except InboxFull:

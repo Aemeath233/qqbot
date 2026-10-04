@@ -25,6 +25,8 @@ class Settings:
     app_id: str
     app_secret: str = field(repr=False)
     transport: str = "websocket"
+    markdown_enabled: bool = True
+    buttons_enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8080
     db_path: Path = Path("data/qqbot.sqlite3")
@@ -138,6 +140,8 @@ class Settings:
             app_id=app_id,
             app_secret=app_secret,
             transport=transport,
+            markdown_enabled=_boolean("QQ_MARKDOWN_ENABLED", True),
+            buttons_enabled=_boolean("QQ_BUTTONS_ENABLED", True),
             host=os.getenv("QQ_HOST", "127.0.0.1").strip(),
             port=port,
             db_path=db_path,

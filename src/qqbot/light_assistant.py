@@ -5,8 +5,9 @@ import logging
 import re
 
 from qqbot.config import Settings
-from qqbot.electricity import ElectricityClient, ElectricityError, format_electricity
+from qqbot.electricity import ElectricityClient, ElectricityError
 from qqbot.llm import ChatCompletionsClient, LLMError
+from qqbot.presentation import electricity_reply
 
 logger = logging.getLogger(__name__)
 SYSTEM = (
@@ -16,7 +17,10 @@ SYSTEM = (
     "例如‘看看33楼4032宿舍电费’应调用 query_electricity，dormitory 为33#4032。"
     "‘/电费 33#4032’和‘/electricity 33#4032’也表示同一查询。"
     "用户要查当前电量，且楼号与房号都明确、只查询一间宿舍时，应调用工具。"
-    "缺少楼号或房号时，请用户提供完整信息，不得猜测，也不得调用工具。"
+    "未绑定默认宿舍且缺少楼号或房号时，请用户提供完整信息，不得猜测，也不得调用工具。"
+    "已绑定默认宿舍时，用户说‘查一下电费’‘还有多少电’，应调用 query_electricity，"
+    "可以省略 dormitory 和 area，让程序使用绑定。用户明确指定其他宿舍时查询指定宿舍。"
+    "绑定必须由用户点击查询结果的绑定按钮并确认，不能声称通过聊天已经绑定成功。"
     "如果用户要求同时查询多间宿舍，请用户选择一间。"
     "用户说‘19号楼312’时传19#312；不能把19312擅自拆成楼号和房号。"
     "area 仅在用户明确提供区域名称或编号时传入，否则省略。"
@@ -32,15 +36,19 @@ TOOLS = [
             "name": "query_electricity",
             "description": (
                 "查询一个宿舍当前剩余电量，单位为度。用户说查电费、看看宿舍电费、"
-                "还有多少电时使用。仅当楼号、房号明确时调用；缺少信息先询问。"
+                "还有多少电时使用。楼号、房号明确时可查询指定宿舍。"
+                "存在已绑定默认宿舍时可省略 dormitory；未绑定且缺少信息则先询问。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "dormitory": {"type": "string", "description": "楼号#房号，例如33#2035"},
+                    "dormitory": {
+                        "type": "string",
+                        "description": "楼号#房号，例如33#2035；查询已绑定宿舍时可省略或传空字符串",
+                    },
                     "area": {"type": "string", "description": "可选的、用户明确确认的区域"},
                 },
-                "required": ["dormitory"],
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -57,15 +65,27 @@ class LightAssistant:
         self.settings = settings
         self.model = ChatCompletionsClient(settings, session)
         self.electricity = ElectricityClient(settings, session)
+        self.state = None
 
-    async def generate(self, task_kind: str, payload: str) -> str:
+    async def generate(self, task_kind: str, payload: str, *, context=None):
         if task_kind != "chat":
             return self._refusal()
         if not self.settings.llm_enabled:
             return "自然语言查询尚未配置模型服务，请在 .env 中填写 LLM_API_KEY 和 LLM_MODEL。"
+        binding = (
+            self.state.binding(context) if self.state is not None and context is not None else None
+        )
+        binding_prompt = (
+            f"当前用户已绑定默认宿舍：{binding['dormitory']}，区域编号：{binding['area']}。"
+            if binding is not None
+            else "当前用户尚未绑定默认宿舍。"
+        )
         try:
             response = await self.model.complete(
-                [{"role": "system", "content": SYSTEM}, {"role": "user", "content": payload}],
+                [
+                    {"role": "system", "content": SYSTEM + binding_prompt},
+                    {"role": "user", "content": payload},
+                ],
                 TOOLS,
             )
         except LLMError as exc:
@@ -88,9 +108,17 @@ class LightAssistant:
             if (
                 not isinstance(arguments, dict)
                 or set(arguments) - {"dormitory", "area"}
-                or not isinstance(arguments.get("dormitory"), str)
-                or not 0 < len(arguments["dormitory"]) <= 80
-                or re.fullmatch(r"[0-9]{1,3}#[0-9]{1,6}", arguments["dormitory"]) is None
+                or (
+                    "dormitory" in arguments
+                    and (
+                        not isinstance(arguments["dormitory"], str)
+                        or (
+                            arguments["dormitory"] != ""
+                            and re.fullmatch(r"[0-9]{1,3}#[0-9]{1,6}", arguments["dormitory"])
+                            is None
+                        )
+                    )
+                )
                 or not isinstance(arguments.get("area", ""), str)
                 or len(arguments.get("area", "")) > 80
             ):
@@ -98,12 +126,24 @@ class LightAssistant:
         except (ValueError, TypeError, RecursionError):
             return "请告诉我明确的楼号和房间号，例如33号楼2035室。"
         area = arguments.get("area", "").strip()
+        dormitory = arguments.get("dormitory")
+        if not dormitory:
+            if binding is None:
+                return "你还没有绑定默认宿舍，请告诉我楼号和房号。查询后可以点击“绑定此宿舍”。"
+            dormitory = binding["dormitory"]
+            area = area or binding["area"]
+        elif binding is not None and dormitory == binding["dormitory"]:
+            area = area or binding["area"]
+        return await self.query_electricity(dormitory, area, context=context)
 
+    async def query_electricity(self, dormitory, area="", *, context=None):
         try:
-            result = await self.electricity.query(arguments["dormitory"], area=area)
+            result = await self.electricity.query(dormitory, area=area)
         except ElectricityError as exc:
             return str(exc)
-        return format_electricity(result)
+        if self.state is not None and context is not None:
+            return self.state.card(result, context)
+        return electricity_reply(result).text
 
     @staticmethod
     def _refusal() -> str:

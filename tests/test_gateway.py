@@ -8,7 +8,13 @@ from aiohttp.test_utils import TestServer
 from conftest import event_payload
 
 from qqbot.api import QQAPI
-from qqbot.gateway import GROUP_AND_C2C_INTENT, Gateway, GatewayFatalError, GatewayReconnect
+from qqbot.gateway import (
+    GROUP_AND_C2C_INTENT,
+    INTERACTION_INTENT,
+    Gateway,
+    GatewayFatalError,
+    GatewayReconnect,
+)
 from qqbot.inbox import InboxFull
 from qqbot.runtime import Runtime
 
@@ -71,7 +77,7 @@ async def test_identify_check_and_resume(settings):
         with local_socket(session):
             await gateway.connect(check_only=True)
             await gateway.connect(check_only=True)
-    assert received[0]["d"]["intents"] == GROUP_AND_C2C_INTENT
+    assert received[0]["d"]["intents"] == GROUP_AND_C2C_INTENT | INTERACTION_INTENT
     assert received[0]["d"]["shard"] == [0, 1]
     assert received[1] == {
         "op": 6,
@@ -162,6 +168,7 @@ async def test_close_codes(settings, code, reset, fatal):
         gateway = Gateway(
             QQAPI(settings, session, base_url=str(server.make_url(""))), lambda p: None
         )
+        gateway.api.buttons_enabled = False
         with (
             local_socket(session),
             pytest.raises(GatewayFatalError if fatal else GatewayReconnect) as caught,
@@ -169,6 +176,29 @@ async def test_close_codes(settings, code, reset, fatal):
             await gateway.connect()
     assert (gateway.session_id is None) == reset
     assert "fake-access-token" not in str(caught.value)
+
+
+async def test_button_permission_failure_falls_back_to_basic_events(settings):
+    intents = []
+
+    async def handler(request):
+        socket, auth = await handshake(request)
+        intents.append(auth["d"]["intents"])
+        if len(intents) == 1:
+            await socket.close(code=4014)
+        else:
+            await send_ready(socket)
+            await socket.receive()
+        return socket
+
+    async with TestServer(mock_app(handler)) as server, aiohttp.ClientSession() as session:
+        api = QQAPI(settings, session, base_url=str(server.make_url("")))
+        gateway = Gateway(api, lambda p: None)
+        with local_socket(session):
+            with pytest.raises(GatewayReconnect, match="按钮事件权限不足"):
+                await gateway.connect()
+            await gateway.connect(check_only=True)
+    assert intents == [GROUP_AND_C2C_INTENT | INTERACTION_INTENT, GROUP_AND_C2C_INTENT]
 
 
 async def test_invalid_session_resumes_then_identifies(settings):

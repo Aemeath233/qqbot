@@ -11,6 +11,8 @@ import aiohttp
 from qqbot.config import Settings
 
 API_BASE = "https://api.bot.qq.com"
+
+
 class QQAPIError(Exception):
     def __init__(self, status: int, code: Any = None, trace_id: Any = None):
         self.status = status
@@ -31,8 +33,12 @@ class QQAPI:
         self._token = ""
         self._refresh_at = 0.0
         self._lock = asyncio.Lock()
+        self.markdown_enabled = settings.markdown_enabled
+        self.buttons_enabled = settings.buttons_enabled and settings.markdown_enabled
 
     async def _decode(self, response: aiohttp.ClientResponse) -> dict[str, Any]:
+        if response.status == 204:
+            return {}
         try:
             data = await response.json(content_type=None)
         except (ValueError, UnicodeError):
@@ -92,14 +98,45 @@ class QQAPI:
         raise AssertionError("unreachable")
 
     async def send_text(
-        self, kind: str, target_id: str, message_id: str, content: str, *, msg_seq: int = 1
+        self,
+        kind: str,
+        target_id: str,
+        message_id: str,
+        content: str,
+        *,
+        msg_seq: int = 1,
+        reference: str = "msg_id",
     ):
         if kind not in {"users", "groups"}:
             raise ValueError("不支持的消息场景")
+        if reference not in {"msg_id", "event_id"}:
+            raise ValueError("无效回复引用")
         return await self.request(
             "POST",
             f"/v2/{kind}/{quote(target_id, safe='')}/messages",
-            payload={"msg_type": 0, "content": content, "msg_id": message_id, "msg_seq": msg_seq},
+            payload={"msg_type": 0, "content": content, reference: message_id, "msg_seq": msg_seq},
+        )
+
+    async def send_markdown(
+        self, kind, target_id, message_id, content, *, keyboard=None, reference="msg_id"
+    ):
+        if kind not in {"users", "groups"} or reference not in {"msg_id", "event_id"}:
+            raise ValueError("无效的消息场景或回复引用")
+        payload = {
+            "msg_type": 2,
+            "markdown": {"content": content},
+            reference: message_id,
+            "msg_seq": 1,
+        }
+        if keyboard is not None and self.buttons_enabled:
+            payload["keyboard"] = keyboard
+        return await self.request(
+            "POST", f"/v2/{kind}/{quote(target_id, safe='')}/messages", payload=payload
+        )
+
+    async def acknowledge_interaction(self, interaction_id, code=0):
+        return await self.request(
+            "PUT", "/interactions/" + quote(interaction_id, safe=""), payload={"code": code}
         )
 
     async def me(self):

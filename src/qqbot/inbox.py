@@ -6,6 +6,7 @@ from pathlib import Path
 
 from qqbot.commands import ReplyTask
 from qqbot.messages import Message
+from qqbot.presentation import Reply
 
 INTERRUPTED_REPLY = (
     "上次请求处理被中断，执行结果无法确认。为避免重复操作，本次未重新执行。"
@@ -46,6 +47,9 @@ class Inbox:
             "conversation_key": "TEXT NOT NULL DEFAULT ''",
             "prepared": "INTEGER NOT NULL DEFAULT 1",
             "generation_started": "INTEGER NOT NULL DEFAULT 0",
+            "sender_id": "TEXT NOT NULL DEFAULT ''",
+            "reference": "TEXT NOT NULL DEFAULT 'msg_id'",
+            "reply_json": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if name not in columns:
                 self.db.execute(f"ALTER TABLE replies ADD COLUMN {name} {definition}")
@@ -103,8 +107,8 @@ class Inbox:
             self.db.execute(
                 """INSERT INTO replies
                    (key, kind, target_id, message_id, content, created_at, expires_at, next_try_at,
-                    task_kind, task_payload, conversation_key, prepared)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    task_kind, task_payload, conversation_key, prepared, sender_id, reference)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     message.key,
                     message.kind,
@@ -118,6 +122,8 @@ class Inbox:
                     task_payload,
                     message.conversation_key,
                     int(task_kind == "text"),
+                    message.sender_id,
+                    message.reference,
                 ),
             )
         return True
@@ -127,11 +133,16 @@ class Inbox:
             return self.add(message, task.content)
         return self.add(message, "", task_kind=task.kind, task_payload=task.content)
 
-    def save_content(self, key: str, content: str):
+    def save_content(self, key: str, content: str | Reply):
         # QQ 发送失败后重试这一份回复，不重新请求 LLM 或重新查询电量。
         with self.db:
             self.db.execute(
-                "UPDATE replies SET content = ?, prepared = 1 WHERE key = ?", (content, key)
+                "UPDATE replies SET content = ?, reply_json = ?, prepared = 1 WHERE key = ?",
+                (
+                    content.text if isinstance(content, Reply) else content,
+                    content.dumps() if isinstance(content, Reply) else "",
+                    key,
+                ),
             )
 
     def start_generation(self, key: str):
