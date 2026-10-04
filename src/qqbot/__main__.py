@@ -1,3 +1,3 @@
-from qqbot.cli import main
+from qqbot.light_cli import main
 
 main()
