@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 import sqlite3
 from dataclasses import replace
 from unittest.mock import AsyncMock
@@ -10,7 +12,7 @@ from aiohttp.test_utils import TestServer
 from conftest import event_payload
 
 from qqbot.api import QQAPI, QQAPIError
-from qqbot.dorm_state import UserContext
+from qqbot.dorm_state import DormState, UserContext, identity_tag
 from qqbot.interactions import ButtonClick
 from qqbot.light_assistant import LightAssistant
 from qqbot.presentation import Reply, electricity_reply
@@ -270,7 +272,8 @@ async def test_default_binding_does_not_leak_to_other_users(runtime):
     assert "还没有绑定" in reply
     runtime.assistant.electricity.query.assert_not_awaited()
     private = UserContext("users", "sender-1", "sender-1")
-    assert runtime.state.binding(private) is None
+    assert runtime.state.binding(private)["dormitory"] == "33#4032"
+    assert runtime.state.binding(UserContext("users", "different-id", "different-id")) is None
 
 
 async def test_model_empty_dormitory_can_use_binding(runtime):
@@ -370,13 +373,13 @@ async def test_query_and_again_never_bind_in_either_group(runtime):
     assert runtime.api.send_markdown.call_args.args[1] == "group-1"
 
 
-def test_bindings_are_independent_for_same_user_in_two_groups(runtime):
+def test_binding_is_shared_by_same_user_in_two_groups(runtime):
     first = UserContext("groups", "group-1", "sender-1")
     second = UserContext("groups", "group-2", "sender-1")
     set_binding(runtime.state, first, "33#4032")
-    assert runtime.state.binding(second) is None
+    assert runtime.state.binding(second)["dormitory"] == "33#4032"
     set_binding(runtime.state, second, "33#2004")
-    assert runtime.state.binding(first)["dormitory"] == "33#4032"
+    assert runtime.state.binding(first)["dormitory"] == "33#2004"
     assert runtime.state.binding(second)["dormitory"] == "33#2004"
 
 
@@ -483,15 +486,20 @@ def test_confirmation_is_scoped_to_user_and_group(runtime):
     assert runtime.state.binding(context) is None
 
 
-def test_legacy_unscoped_binding_is_preserved_but_not_inherited(runtime):
+def test_legacy_user_binding_is_migrated_and_shared_without_overwriting(runtime):
     import json
 
     old = json.dumps(["test-app", "groups", "sender-1"], separators=(",", ":"))
     runtime.inbox.db.execute("INSERT INTO dorm_bindings VALUES (?,?,?,?)", (old, "21#2011", "1", 0))
     runtime.inbox.db.commit()
-    assert runtime.state.binding(UserContext("groups", "group-1", "sender-1")) is None
-    assert runtime.state.binding(UserContext("groups", "group-2", "sender-1")) is None
-    assert runtime.inbox.db.execute("SELECT COUNT(*) FROM dorm_bindings").fetchone()[0] == 1
+    from qqbot.dorm_state import DormState
+
+    state = DormState(runtime.inbox.db, "test-app")
+    assert state.binding(UserContext("groups", "group-1", "sender-1"))["dormitory"] == "21#2011"
+    assert state.binding(UserContext("groups", "group-2", "sender-1"))["dormitory"] == "21#2011"
+    set_binding(state, UserContext("groups", "group-2", "sender-1"), "33#2004")
+    again = DormState(runtime.inbox.db, "test-app")
+    assert again.binding(UserContext("groups", "group-1", "sender-1"))["dormitory"] == "33#2004"
 
 
 async def test_invalid_task_origin_never_sends_to_another_group(runtime):
@@ -544,7 +552,7 @@ def test_legacy_private_binding_can_be_safely_migrated(runtime):
         state.binding(UserContext("users", "private-user", "private-user"))["dormitory"]
         == "33#4032"
     )
-    assert state.binding(UserContext("groups", "group-1", "private-user")) is None
+    assert state.binding(UserContext("groups", "group-1", "private-user"))["dormitory"] == "33#4032"
 
 
 async def test_card_from_group_a_is_never_sent_to_group_b(runtime):
@@ -569,3 +577,173 @@ def test_binding_confirmation_does_not_coerce_non_boolean_values(runtime):
     with pytest.raises(ValueError):
         runtime.state.finish_binding(context, request["request_id"], confirm="false")
     assert runtime.state.binding(context) is None
+
+
+async def test_same_user_queries_shared_binding_in_group_b_but_reply_stays_in_b(runtime):
+    first = UserContext("groups", "group-1", "sender-1")
+    set_binding(runtime.state, first, "21#2011", "1")
+    event = event_payload(group=True, content="帮我查一下电费", message_id="group-b-query")
+    event["d"]["group_openid"] = "group-2"
+    runtime.accept_event(event)
+    await runtime.process(runtime.inbox.next())
+    runtime.assistant.electricity.query.assert_awaited_once_with("21#2011", area="1")
+    assert runtime.api.send_markdown.call_args.args[1] == "group-2"
+    assert runtime.state.binding(first)["dormitory"] == "21#2011"
+    stages = [
+        r[0]
+        for r in runtime.inbox.db.execute(
+            "SELECT stage FROM bot_operations WHERE trace=? ORDER BY id",
+            (
+                identity_tag(
+                    runtime.inbox.db.execute(
+                        "SELECT key FROM replies WHERE message_id='group-b-query'"
+                    ).fetchone()[0]
+                ),
+            ),
+        )
+    ]
+    assert stages == [
+        "message_received",
+        "task_queued",
+        "task_started",
+        "model_started",
+        "tool_selected",
+        "query_started",
+        "query_finished",
+        "buttons_created",
+        "reply_attempt",
+        "reply_sent",
+        "task_done",
+    ]
+
+
+@pytest.mark.parametrize("word", ["是", "yes", "确认", "确定"])
+async def test_casual_confirmation_word_never_saves_pending_binding(runtime, word):
+    user = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(user, "33#4032", "2")
+    runtime.assistant.model.complete.return_value = {"content": "请点击是，或回复确认绑定。"}
+    runtime.accept_event(event_payload(group=True, content=word))
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(user) is None
+    assert runtime.state.latest_request(user) is not None
+    runtime.assistant.model.complete.assert_awaited_once()
+
+
+async def test_text_confirmation_in_other_group_cannot_confirm_group_a_prompt(runtime):
+    first = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(first, "33#4032", "2")
+    event = event_payload(group=True, content="确认绑定")
+    event["d"]["group_openid"] = "group-2"
+    runtime.assistant.model.complete.return_value = {"content": "请在发起绑定的群确认。"}
+    runtime.accept_event(event)
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(first) is None
+    assert runtime.state.latest_request(first) is not None
+
+
+async def test_duplicate_callback_with_changed_envelope_id_queries_once(runtime):
+    event = interaction(action_data(card(runtime), 0))
+    await runtime.handle_event(event)
+    await runtime.process(runtime.inbox.next())
+    event["id"] = "a-different-delivery-envelope"
+    await runtime.handle_event(event)
+    assert runtime.inbox.pending_count() == 0
+    runtime.assistant.electricity.query.assert_awaited_once()
+
+
+async def test_callback_id_reused_for_another_group_or_action_is_rejected_and_logged(runtime):
+    first = card(runtime)
+    second = runtime.state.card(result(), UserContext("groups", "group-2", "sender-1"))
+    await runtime.handle_event(interaction(action_data(first, 0)))
+    await runtime.process(runtime.inbox.next())
+    await runtime.handle_event(interaction(action_data(second, 1), group="group-2"))
+    runtime.api.acknowledge_interaction.assert_awaited_with("click-1", 4)
+    assert runtime.inbox.pending_count() == 0
+    assert runtime.state.latest_request(UserContext("groups", "group-2", "sender-1")) is None
+    row = runtime.inbox.db.execute(
+        "SELECT details FROM bot_operations WHERE stage='button_rejected' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert json.loads(row[0])["reason"] == "callback_id_reused_with_changed_fields"
+
+
+async def test_raw_callback_evidence_is_logged_before_id_validation_without_tokens(runtime, caplog):
+    reply = card(runtime)
+    buttons = reply.keyboard["content"]["rows"][0]["buttons"]
+    event = interaction(action_data(reply, 1))
+    event["d"]["data"]["resolved"]["button_id"] = buttons[0]["id"]
+    with caplog.at_level(logging.INFO):
+        await runtime.handle_event(event)
+    row = runtime.inbox.db.execute(
+        "SELECT details FROM bot_operations WHERE stage='button_received' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    details = json.loads(row[0])
+    assert details["data_action"] == details["stored_action"] == "bind"
+    assert details["button"] == identity_tag(buttons[0]["id"])
+    assert details["stored_button"] == identity_tag(buttons[1]["id"])
+    assert details["source_group"] == identity_tag("group-1")
+    assert "group-1" not in caplog.text and "sender-1" not in caplog.text
+    assert action_data(reply, 1) not in caplog.text
+    assert buttons[0]["id"] not in caplog.text
+    assert runtime.state.binding(UserContext("groups", "group-1", "sender-1")) is None
+
+
+def test_binding_and_durable_audit_roll_back_together(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(context, "33#4032", "2")
+    request_id = runtime.state.latest_request(context)["request_id"]
+    runtime.inbox.db.execute("""CREATE TRIGGER fail_binding_audit BEFORE INSERT ON bot_operations
+        WHEN NEW.stage='binding_saved' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END""")
+    runtime.inbox.db.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        runtime.state.finish_binding(context, request_id, confirm=True)
+    assert runtime.state.binding(context) is None
+    assert runtime.state.latest_request(context)["request_id"] == request_id
+    assert not runtime.inbox.db.execute(
+        "SELECT 1 FROM bot_operations WHERE stage='binding_saved'"
+    ).fetchone()
+
+
+def test_latest_legacy_group_binding_migrates_once_to_shared_user_binding(runtime):
+    for group, room, stamp in [("group-1", "33#4032", 10), ("group-2", "33#2004", 20)]:
+        runtime.inbox.db.execute(
+            "INSERT INTO dorm_bindings VALUES (?,?,?,?)",
+            (json.dumps(["test-app", "groups", group, "legacy-user"]), room, "2", stamp),
+        )
+    runtime.inbox.db.commit()
+    state = DormState(runtime.inbox.db, "test-app", audit=runtime.audit)
+    for group in ("group-1", "group-2"):
+        assert state.binding(UserContext("groups", group, "legacy-user"))["dormitory"] == "33#2004"
+    other_app = DormState(runtime.inbox.db, "other-app")
+    assert other_app.binding(UserContext("groups", "group-1", "legacy-user")) is None
+    set_binding(state, UserContext("groups", "group-1", "legacy-user"), "33#4032")
+    reloaded = DormState(runtime.inbox.db, "test-app")
+    assert (
+        reloaded.binding(UserContext("groups", "group-2", "legacy-user"))["dormitory"] == "33#4032"
+    )
+
+
+def test_cancelled_binding_is_persisted_and_logged_after_commit(runtime, caplog):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(context, "33#4032", "2")
+    request_id = runtime.state.latest_request(context)["request_id"]
+    with caplog.at_level(logging.INFO):
+        runtime.state.finish_binding(context, request_id, confirm=False)
+    assert "binding_cancelled" in caplog.text
+    assert runtime.inbox.db.execute(
+        "SELECT 1 FROM bot_operations WHERE stage='binding_cancelled'"
+    ).fetchone()
+    assert runtime.state.binding(context) is None
+
+
+async def test_audit_storage_failure_stops_worker_instead_of_silently_losing_operations(runtime):
+    runtime.accept_event(event_payload(group=True, content="查电费"))
+    runtime.inbox.db.execute("""CREATE TRIGGER fail_all_audit BEFORE INSERT ON bot_operations
+        BEGIN SELECT RAISE(ABORT,'audit unavailable'); END""")
+    runtime.inbox.db.commit()
+    async with asyncio.timeout(2):
+        with pytest.raises(RuntimeError, match="停止服务"):
+            await runtime.work()
+    assert isinstance(runtime.worker_error, sqlite3.IntegrityError)
+    runtime.assistant.model.complete.assert_not_awaited()
+    runtime.api.send_markdown.assert_not_awaited()
+    runtime.api.send_text.assert_not_awaited()

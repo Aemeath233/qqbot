@@ -21,6 +21,7 @@ class Message:
     full_group: bool = False
     sender_id: str = ""
     reference: Literal["msg_id", "event_id"] = "msg_id"
+    interaction_id: str = ""
 
     @property
     def conversation_key(self) -> str:
@@ -35,7 +36,11 @@ class Message:
     @property
     def key(self) -> str:
         # 本项目对每条原始消息只回复一次；两个群事件也共享同一个去重键。
-        message_id = ("interaction:" if self.reference == "event_id" else "") + self.message_id
+        message_id = (
+            "interaction:" + (self.interaction_id or self.message_id)
+            if self.reference == "event_id"
+            else self.message_id
+        )
         return json.dumps([self.kind, self.target_id, message_id], separators=(",", ":"))
 
     @classmethod

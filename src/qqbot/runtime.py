@@ -17,6 +17,7 @@ from qqbot.inbox import INTERRUPTED_REPLY, Inbox, InboxFull
 from qqbot.interactions import ButtonClick
 from qqbot.light_commands import LightCommandRouter
 from qqbot.messages import Message
+from qqbot.operation_log import OperationLog, error_location, operation_trace
 from qqbot.presentation import Reply, help_reply
 from qqbot.signing import WebhookSigner
 
@@ -29,27 +30,81 @@ class Runtime:
         self.signer = WebhookSigner(settings.app_secret)
         self.router = LightCommandRouter()
         self.inbox = Inbox(settings.db_path)
-        self.state = DormState(self.inbox.db, settings.app_id)
+        self.audit = OperationLog(self.inbox.db)
+        self.state = DormState(self.inbox.db, settings.app_id, audit=self.audit)
         discarded = self.inbox.discard_legacy_button_jobs()
         if discarded:
             logger.info("已停止 %d 个旧版按钮任务，请使用新查询结果的按钮", discarded)
         if assistant is not None:
             assistant.state = self.state
+            assistant.audit = self.audit
         self.wakeup = asyncio.Event()
         self.worker: asyncio.Task | None = None
+        self.worker_error: Exception | None = None
         self.active: dict[str, tuple[str, bool, asyncio.Task]] = {}
+        from qqbot import __version__
+
+        self.audit.record(
+            "startup",
+            version=__version__,
+            app=identity_tag(settings.app_id),
+            transport=settings.transport,
+            llm_enabled=settings.llm_enabled,
+            markdown=settings.markdown_enabled,
+            buttons=settings.buttons_enabled,
+        )
+
+    def record(self, stage, item, **details):
+        if isinstance(item, Message):
+            context = UserContext(item.kind, item.target_id, item.sender_id)
+            key = item.key
+        else:
+            context = UserContext(item["kind"], item["target_id"], item["sender_id"])
+            key = item["key"]
+        return self.audit.record(stage, context, trace=identity_tag(key), **details)
 
     def accept_event(self, payload):
         if payload.get("t") == "INTERACTION_CREATE":
-            click = ButtonClick.parse(payload, self.settings.app_id)
+            try:
+                click = ButtonClick.parse(payload, self.settings.app_id)
+            except (ValueError, TypeError):
+                self.audit.record("event_invalid", event="interaction")
+                raise
             if click is None:
                 return None
             context = UserContext(
                 click.message.kind, click.message.target_id, click.message.sender_id
             )
+            parts = click.data.split(":")
+            hint = parts[2] if len(parts) == 4 and parts[:2] == ["electricity", "v2"] else ""
+            if hint not in {"query", "bind", "help", "confirm_bind", "cancel_bind"}:
+                hint = "unknown"
+            self.record(
+                "button_received",
+                click.message,
+                callback=identity_tag(click.ack_id),
+                button=identity_tag(click.button_id) if click.button_id else "missing",
+                data=identity_tag(click.data),
+                data_action=hint,
+                platform_time=click.occurred_at,
+                **self.state.button_evidence(click.data),
+            )
+            receipt = self.audit.remember_callback(click)
+            self.record("callback_receipt", click.message, result=receipt)
+            if receipt == "conflict":
+                self.record(
+                    "button_rejected",
+                    click.message,
+                    reason="callback_id_reused_with_changed_fields",
+                    code=4,
+                )
+                return click.ack_id, 4
             try:
                 action = self.state.action(click.data, context, button_id=click.button_id)
             except PermissionError:
+                self.record(
+                    "button_rejected", click.message, reason="origin_or_id_mismatch", code=4
+                )
                 logger.warning(
                     "拒绝不匹配按钮：群=%s，用户=%s",
                     identity_tag(context.target_id),
@@ -58,6 +113,7 @@ class Runtime:
                 return click.ack_id, 4
             if action is None:
                 # 无法验证来源时仅确认失败，不在未经验证的群里执行或发送绑定结果。
+                self.record("button_rejected", click.message, reason="expired_or_unknown", code=1)
                 return click.ack_id, 1
             task = ReplyTask(
                 "button_" + action["action"],
@@ -85,18 +141,34 @@ class Runtime:
             try:
                 added = self.inbox.add_task(click.message, task)
             except InboxFull:
+                self.record("queue_full", click.message, action=action["action"])
                 return click.ack_id, 2
+            self.record(
+                "task_queued" if added else "task_not_queued",
+                click.message,
+                task=task.kind,
+                reason=""
+                if added
+                else ("expired" if click.message.expires_at <= time.time() else "duplicate"),
+                dormitory=action["dormitory"],
+                request=identity_tag(action["request_id"]) if action["request_id"] else "",
+            )
             if added:
                 self.wakeup.set()
-            return click.ack_id, code
-        message = Message.from_payload(
-            payload, accept_full_group=self.settings.accept_group_messages
-        )
+            return click.ack_id, code if added or click.message.expires_at > time.time() else 1
+        try:
+            message = Message.from_payload(
+                payload, accept_full_group=self.settings.accept_group_messages
+            )
+        except (ValueError, TypeError):
+            self.audit.record("event_invalid", event="message")
+            raise
         if message is not None:
             context = UserContext(message.kind, message.target_id, message.sender_id)
             pending = self.state.latest_request(context)
             decision = message.content.strip().casefold()
-            yes = {"是", "yes", "确认", "确定", "确认更换", "确认绑定"}
+            # 不把群里随口说的“是/确认”当成有副作用的绑定授权。
+            yes = {"确认更换", "确认绑定"}
             no = {"否", "no", "取消", "取消更换", "取消绑定", "不更换"}
             if pending is not None and decision in yes | no:
                 task = ReplyTask(
@@ -116,16 +188,43 @@ class Runtime:
                 identity_tag(message.target_id),
                 identity_tag(message.sender_id),
             )
-            if task is not None and self.inbox.add_task(message, task):
-                self.wakeup.set()
+            self.record("message_received", message, event=payload["t"])
+            if task is not None:
+                try:
+                    added = self.inbox.add_task(message, task)
+                except InboxFull:
+                    self.record("queue_full", message, task=task.kind)
+                    raise
+                self.record(
+                    "task_queued" if added else "task_not_queued",
+                    message,
+                    task=task.kind,
+                    reason=""
+                    if added
+                    else ("expired" if message.expires_at <= time.time() else "duplicate"),
+                )
+                if added:
+                    self.wakeup.set()
 
     async def handle_event(self, payload):
         ack = self.accept_event(payload)
         if ack is not None:
+            click = ButtonClick.parse(payload, self.settings.app_id)
+            trace = identity_tag(click.message.key)
             try:
                 async with asyncio.timeout(3):
                     await self.api.acknowledge_interaction(*ack)
+                self.audit.record(
+                    "interaction_ack", trace=trace, callback=identity_tag(ack[0]), code=ack[1]
+                )
             except (QQAPIError, aiohttp.ClientError, TimeoutError) as exc:
+                self.audit.record(
+                    "interaction_ack_failed",
+                    trace=trace,
+                    callback=identity_tag(ack[0]),
+                    error=type(exc).__name__,
+                    code=exc.code if isinstance(exc, QQAPIError) else None,
+                )
                 logger.warning(
                     "按钮事件确认失败：%s",
                     str(exc) if isinstance(exc, QQAPIError) else type(exc).__name__,
@@ -134,6 +233,8 @@ class Runtime:
     async def work(self):
         try:
             while True:
+                if self.worker_error is not None:
+                    raise RuntimeError("消息任务异常退出，停止服务以避免漏记操作") from None
                 self.wakeup.clear()
                 for prepared, limit in ((True, 2), (False, 4)):
                     while sum(item[1] == prepared for item in self.active.values()) < limit:
@@ -144,6 +245,7 @@ class Runtime:
                         task = asyncio.create_task(
                             self.process(job), name="qqbot-electricity-reply"
                         )
+                        task.add_done_callback(self.task_finished)
                         self.active[job["key"]] = (job["conversation_key"], prepared, task)
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.wakeup.wait(), timeout=0.5)
@@ -153,14 +255,30 @@ class Runtime:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    def task_finished(self, task):
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            self.worker_error = exc
+            logger.error("消息任务未正常完成，停止工作队列：%s", type(exc).__name__)
+            self.wakeup.set()
+
     async def process(self, job):
+        trace_token = operation_trace.set(identity_tag(job["key"]))
         try:
+            self.record(
+                "task_started",
+                job,
+                task=job["task_kind"],
+                attempt=job["attempts"] + 1,
+                prepared=bool(job["prepared"]),
+            )
             if time.time() >= job["expires_at"]:
                 self.inbox.failed(job["key"], job["attempts"], retry=False)
+                self.record("task_expired", job)
                 return
             content = Reply.loads(job["reply_json"]) if job["reply_json"] else job["content"]
             if not job["prepared"]:
                 if job["generation_started"]:
+                    self.record("generation_not_replayed", job)
                     content = INTERRUPTED_REPLY
                 else:
                     self.inbox.start_generation(job["key"])
@@ -183,6 +301,7 @@ class Runtime:
                                 if not valid_origin:
                                     self.inbox.failed(job["key"], job["attempts"] + 1, retry=False)
                                     logger.error("按钮任务来源不一致，未执行或发送回复")
+                                    self.record("task_rejected", job, reason="task_origin_mismatch")
                                     return
                                 if kind == "button_query":
                                     content = await self.assistant.query_electricity(
@@ -212,13 +331,21 @@ class Runtime:
                                     kind, job["task_payload"], context=context
                                 )
                     except TimeoutError:
+                        self.record("generation_failed", job, error="TimeoutError")
                         content = "处理超时，执行结果可能未知；本次不会自动重试，请先核对实际状态。"
                     except Exception as exc:
+                        self.record(
+                            "generation_failed",
+                            job,
+                            error=type(exc).__name__,
+                            location=error_location(exc),
+                        )
                         logger.warning("单条电费消息异常：%s", type(exc).__name__)
                         content = "电费处理失败，执行结果无法确认；如需继续，请发送新消息。"
                 self.inbox.save_content(job["key"], content)
             if time.time() >= job["expires_at"]:
                 self.inbox.failed(job["key"], job["attempts"], retry=False)
+                self.record("task_expired", job)
                 return
             await self.send_reply(job, content)
         except (QQAPIError, aiohttp.ClientError, TimeoutError) as exc:
@@ -226,6 +353,15 @@ class Runtime:
             retryable = not isinstance(exc, QQAPIError) or exc.retryable
             retry = retryable and attempts < 4
             self.inbox.failed(job["key"], attempts, retry=retry)
+            self.record(
+                "reply_failed",
+                job,
+                error=type(exc).__name__,
+                retry=retry,
+                attempt=attempts,
+                code=exc.code if isinstance(exc, QQAPIError) else None,
+                http=exc.status if isinstance(exc, QQAPIError) else None,
+            )
             logger.warning(
                 "回复%s，尝试次数=%d：%s",
                 "稍后重试" if retry else "失败",
@@ -235,10 +371,18 @@ class Runtime:
         except Exception as exc:
             logger.error("后台任务异常：%s", type(exc).__name__)
             self.inbox.failed(job["key"], job["attempts"] + 1, retry=False)
+            self.record(
+                "task_failed",
+                job,
+                error=type(exc).__name__,
+                location=error_location(exc),
+            )
         else:
             self.inbox.done(job["key"])
+            self.record("task_done", job, task=job["task_kind"])
             logger.info("已回复一条 %s 电费消息", job["kind"])
         finally:
+            operation_trace.reset(trace_token)
             self.active.pop(job["key"], None)
             self.wakeup.set()
 
@@ -256,21 +400,46 @@ class Runtime:
                     for button in buttons
                 )
             except PermissionError:
+                self.record("reply_rejected", job, reason="keyboard_origin_mismatch")
                 logger.error("回复按钮来源不符，未发送：群=%s", identity_tag(context.target_id))
                 raise
             if not valid:
+                self.record("reply_keyboard_removed", job, reason="expired_or_unknown")
                 reply = replace(reply, keyboard=None)
                 self.inbox.save_content(job["key"], reply)
         reference = job["reference"]
         while reply.markdown and getattr(self.api, "markdown_enabled", True):
             try:
-                await self.api.send_markdown(
+                keyboard = reply.keyboard if self.api.buttons_enabled else None
+                self.record(
+                    "reply_attempt",
+                    job,
+                    format="markdown",
+                    keyboard=bool(keyboard),
+                    reference=job["reference"],
+                    buttons=[
+                        identity_tag(button["id"])
+                        for row in keyboard["content"]["rows"]
+                        for button in row["buttons"]
+                    ]
+                    if keyboard
+                    else [],
+                )
+                response = await self.api.send_markdown(
                     job["kind"],
                     job["target_id"],
                     job["message_id"],
                     reply.markdown,
-                    keyboard=reply.keyboard,
+                    keyboard=keyboard,
                     reference=reference,
+                )
+                sent_id = response.get("id") if isinstance(response, dict) else None
+                self.record(
+                    "reply_sent",
+                    job,
+                    format="markdown",
+                    message=identity_tag(sent_id) if isinstance(sent_id, str) else "",
+                    keyboard=bool(keyboard),
                 )
                 logger.info(
                     "电费回复使用 Markdown%s：群=%s，用户=%s",
@@ -311,9 +480,18 @@ class Runtime:
                 else:
                     raise
                 self.inbox.save_content(job["key"], reply)
+                self.record("reply_fallback", job, code=exc.code, markdown=bool(reply.markdown))
         options = {"reference": reference} if reference != "msg_id" else {}
-        await self.api.send_text(
+        self.record("reply_attempt", job, format="text", reference=job["reference"])
+        response = await self.api.send_text(
             job["kind"], job["target_id"], job["message_id"], reply.text, **options
+        )
+        sent_id = response.get("id") if isinstance(response, dict) else None
+        self.record(
+            "reply_sent",
+            job,
+            format="text",
+            message=identity_tag(sent_id) if isinstance(sent_id, str) else "",
         )
         logger.info(
             "电费文本回复：群=%s，用户=%s",

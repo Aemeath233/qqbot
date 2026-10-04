@@ -18,9 +18,11 @@ Python 3.12+、uv。默认使用 WebSocket 主动连接 QQ，不需要公网域�
 
 普通查询和再次查询不修改默认宿舍。模型只能调用 `query_electricity` 或 `request_dorm_binding`；后者仅提出请求，没有任何直接保存绑定的模型工具。保存必须经当前用户的按钮确认或明确确认指令，并校验待确认请求和原绑定状态，避免过期确认覆盖新绑定。
 
-每个按钮都使用独立 ID 和操作令牌，后端校验按钮 ID、动作、原群/会话、操作用户，并在执行任务前再次核对来源。默认宿舍按“AppID + 场景 + 群/会话 + 用户”隔离，A 群的默认宿舍不会带到 B 群或私聊。确认请求有效期 10 分钟；新请求使旧请求失效。查询按钮令牌有效期 24 小时。日志只显示群、用户、按钮的摘要指纹，不输出回调令牌或原始 OpenID。
+每个按钮都使用独立 ID 和操作令牌，后端校验按钮 ID、动作、原群/会话、操作用户，并在执行任务前再次核对来源。默认宿舍按“AppID + 用户 OpenID”保存：同一用户在 A 群绑定，在 B 群直接说“查一下电费”也能查询。身份匹配使用完整 OpenID，日志指纹仅用于查看，不能作为身份键。群号、昵称不参与默认宿舍身份识别；两个不同的 OpenID 不会被猜测合并。私聊返回相同用户 OpenID 时也共用绑定；返回不同标识时保持分别保存。
 
-升级到 0.14.0 后，旧按钮和没有来源校验的旧按钮任务失效，请使用新查询结果。旧群绑定缺少来源群，保留旧记录但不自动分配到各群，需要在各群重新确认；旧私聊绑定可以安全迁移。更新不删除 `.env` 或运行数据。
+共用默认宿舍不等于共用按钮路由：A 群卡片只在 A 群接受操作并回复，B 群不能确认 A 群的请求。确认有效期 10 分钟；同一用户的新请求使旧请求失效。点击“是”，或在发起确认的会话回复“确认绑定”“确认更换”才保存；单独的“是”“确认”“确定”不触发绑定。查询按钮令牌有效期 24 小时。同一互动 ID 重复投递不会重复执行，若同一互动 ID 携带不同群/用户/动作数据则拒绝并记录冲突。
+
+升级到 0.15.0 后，旧版默认宿舍会迁移到用户共用记录。此前同一用户在不同群绑定不同宿舍时，以最近一次保存的绑定为准；已有新格式绑定不会被旧记录覆盖。原记录保留。旧版卡片和未校验来源的旧按钮任务不继续执行，请重新查询后使用新卡片。更新不删除 `.env` 或运行数据。
 
 默认开启 `QQ_MARKDOWN_ENABLED=true`、`QQ_BUTTONS_ENABLED=true`，已有 `.env` 不填也会启用。实际权限需用当前 AppID 测试：QQ 拒绝按钮格式时尝试只发 Markdown；明确拒绝 Markdown 权限/格式时回退纯文本，不重新查询电费。WebSocket 若拒绝新增按钮事件订阅，会关闭按钮并重连基础消息。网络超时不会盲目切换消息格式重发。可手动设置上述开关为 `false`，恢复纯文本或禁用按钮。参考 [群消息 Markdown 与键盘](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)、[按钮点击事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/interaction_create.html) 和 [事件确认接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/interactions_interaction_id.put.html)。
 
@@ -58,6 +60,23 @@ uv run qqbot serve
 启动日志出现“QQ WebSocket 鉴权成功”后，可在群里 @机器人或私聊查询。程序自动发送心跳，断线后以 5～60 秒退避重连，优先恢复会话；消息先持久化再推进网关序号，避免补发导致重复查询。WebSocket 模式不监听 HTTP 端口，原来的 `QQ_HOST`、`QQ_PORT` 配置无需修改。
 
 服务器需要能访问 QQ 和模型接口；如 QQ 平台要求 IP 白名单，填写服务器的公网出口 IP。未上线机器人需在平台配置测试群和测试成员。AppID 的 WebSocket 是否开放以实际鉴权结果为准；如收到权限或连接方式拒绝，日志会给出提示，不会自行切换 Webhook。Ubuntu root systemd 文件见 [deploy/qqbot-root.service](deploy/qqbot-root.service)。永久鉴权或权限错误退出码为 78，systemd 不会无限重试；修正配置后手动重启。
+
+## 操作日志与排查
+
+默认 `LOG_LEVEL=INFO` 会把操作摘要输出到 systemd 日志，同时把详细审计写入 `QQ_DB_PATH` 指定的本地数据库（默认 `data/qqbot.sqlite3` 的 `bot_operations` 表）。审计定期清理超过 7 天或超过 50000 条的记录；队列原有任务记录仍只保留约 1 天。升级前没有记录的字段不能补回。
+
+每条操作有追踪号，串联接收消息/回调、按钮来源及 ID 校验、模型选中的工具、查询缓存或冷却结果、绑定确认/保存、回复目标、格式降级与发送重试。回调记录收到的按钮 ID/data 摘要和对应本地按钮摘要，可判断上报数据与本地映射是否一致。`binding_requested` 仅提出确认，`binding_saved` 才表示绑定和审计在同一事务内保存成功。每次进程启动有独立实例标识，便于识别同时运行或重启的服务。
+
+终端默认仅显示群/用户/按钮指纹，不输出密钥、回调令牌或完整消息正文。审计表保留本地平台 OpenID，可显式使用 `--show-ids` 查看；这是平台 ID，并非 QQ 号。
+
+```bash
+journalctl -u qqbot -f
+cd /home/qqbot
+.venv/bin/python scripts/inspect_electricity_events.py --operations --hours 24 --limit 200
+.venv/bin/python scripts/inspect_electricity_events.py --operations --user 0f58acb570 --hours 24
+```
+
+还可使用 `--group 群指纹` 或 `--trace 追踪号` 筛选；不加 `--operations` 时只读查看原有任务列表。收到回调不能证明客户端屏幕上实际点击的位置；需要把收到的字段、匹配的卡片和实际执行结果一起核对。
 
 ## 可选 Webhook 模式
 

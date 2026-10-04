@@ -25,7 +25,7 @@ SYSTEM = (
     "例如‘更换绑定宿舍为33楼2004室’提出绑定确认；该工具只显示是/否按钮，不直接保存。"
     "缺少新宿舍时先询问，不能擅自沿用原宿舍进行更换。"
     "用户点击‘是’或回复明确的确认指令后，才会由程序保存，不能声称提出请求就已绑定。"
-    "不同群和不同用户的绑定独立，使用的默认宿舍仅属于当前用户在当前会话中的绑定。"
+    "同一用户在不同群共用默认宿舍，不同用户的绑定独立。"
     "如果用户要求同时查询多间宿舍，请用户选择一间。"
     "用户说‘19号楼312’时传19#312；不能把19312擅自拆成楼号和房号。"
     "area 仅在用户明确提供区域名称或编号时传入，否则省略。"
@@ -95,6 +95,11 @@ class LightAssistant:
         self.model = ChatCompletionsClient(settings, session)
         self.electricity = ElectricityClient(settings, session)
         self.state = None
+        self.audit = None
+
+    def record(self, stage, context, **details):
+        if self.audit:
+            self.audit.record(stage, context, **details)
 
     async def generate(self, task_kind: str, payload: str, *, context=None):
         if task_kind != "chat":
@@ -105,11 +110,12 @@ class LightAssistant:
             self.state.binding(context) if self.state is not None and context is not None else None
         )
         binding_prompt = (
-            f"当前用户在本会话已绑定默认宿舍：{binding['dormitory']}，区域编号：{binding['area']}。"
+            f"当前用户已绑定默认宿舍：{binding['dormitory']}，区域编号：{binding['area']}。"
             if binding is not None
-            else "当前用户在本会话尚未绑定默认宿舍，不能使用其他群或其他用户的绑定。"
+            else "当前用户尚未绑定默认宿舍，不能使用其他用户的绑定。"
         )
         try:
+            self.record("model_started", context, has_binding=binding is not None)
             response = await self.model.complete(
                 [
                     {"role": "system", "content": SYSTEM + binding_prompt},
@@ -118,11 +124,13 @@ class LightAssistant:
                 TOOLS,
             )
         except LLMError as exc:
+            self.record("model_failed", context, error="LLMError")
             logger.warning("电费问答模型失败：%s", str(exc))
             return "自然语言查询暂时不可用，请稍后重试。"
 
         calls = response.get("tool_calls") or []
         if not calls:
+            self.record("model_text", context)
             content = response.get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()
@@ -132,6 +140,7 @@ class LightAssistant:
             "query_electricity",
             "request_dorm_binding",
         }:
+            self.record("tool_rejected", context, reason="unsupported_tool_or_count")
             return "每条消息只支持处理一个电费操作。"
         function_name = calls[0]["function"]["name"]
         try:
@@ -157,9 +166,11 @@ class LightAssistant:
             ):
                 raise ValueError
         except (ValueError, TypeError, RecursionError):
+            self.record("tool_rejected", context, reason="invalid_arguments")
             return "请告诉我明确的楼号和房间号，例如33号楼2035室。"
         area = arguments.get("area", "").strip()
         dormitory = arguments.get("dormitory")
+        self.record("tool_selected", context, tool=function_name, dormitory=dormitory or "")
         if function_name == "request_dorm_binding":
             if not dormitory:
                 return "请提供想绑定或更换的新宿舍楼号和房号。"
@@ -184,9 +195,21 @@ class LightAssistant:
 
     async def query_electricity(self, dormitory, area="", *, context=None):
         try:
+            self.record("query_started", context, dormitory=dormitory)
             result = await self.electricity.query(dormitory, area=area)
         except ElectricityError as exc:
+            self.record("query_failed", context, dormitory=dormitory, code=exc.code)
             return str(exc)
+        self.record(
+            "query_finished",
+            context,
+            dormitory=result.get("dormitory", dormitory),
+            ok=bool(result.get("ok")),
+            cached=bool(result.get("cached")),
+            area=result.get("area", ""),
+            remaining_kwh=result.get("remaining_kwh"),
+            queried_at=result.get("queried_at", ""),
+        )
         if self.state is not None and context is not None:
             return self.state.card(result, context)
         return electricity_reply(result).text

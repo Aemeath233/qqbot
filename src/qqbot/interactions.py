@@ -13,6 +13,7 @@ class ButtonClick:
     message: Message
     data: str
     button_id: str = ""
+    occurred_at: float | None = None
 
     @classmethod
     def parse(cls, payload, app_id):
@@ -58,14 +59,23 @@ class ButtonClick:
         if not isinstance(button_id, str) or len(button_id) > 128:
             raise ValueError("按钮标识格式异常")
         expires_at = time.time() + 300
+        occurred_at = None
         if isinstance(event.get("timestamp"), str):
             try:
                 sent_at = datetime.fromisoformat(event["timestamp"])
                 if sent_at.tzinfo is not None:
-                    expires_at = min(expires_at, sent_at.timestamp() + 300)
+                    occurred_at = sent_at.timestamp()
+                    expires_at = min(expires_at, occurred_at + 300)
             except ValueError:
                 pass
         message = Message(
-            kind, target, event_id, "", expires_at, sender_id=sender, reference="event_id"
+            kind,
+            target,
+            event_id,
+            "",
+            expires_at,
+            sender_id=sender,
+            reference="event_id",
+            interaction_id=ack_id,
         )
-        return cls(ack_id, message, button_data, button_id)
+        return cls(ack_id, message, button_data, button_id, occurred_at)
