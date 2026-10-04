@@ -1,6 +1,6 @@
 # QQ 宿舍电量查询机器人
 
-Python 3.12+、uv。机器人只做一件事：通过兼容 OpenAI Chat Completions、支持函数调用的模型理解自然语言，并调用唯一的 `query_electricity` 工具查询明确宿舍当前的剩余电量。
+Python 3.12+、uv。默认使用 WebSocket 主动连接 QQ，不需要公网域名、HTTPS 证书、反向代理或消息回调地址。机器人只做一件事：通过兼容 OpenAI Chat Completions、支持函数调用的模型理解自然语言，并调用唯一的 `query_electricity` 工具查询明确宿舍当前的剩余电量。
 
 例如在 QQ 群里 @机器人，发送“查一下33号楼2035室还有多少电”；也可私聊，或发送 `/电费 33#2035`。楼号或房号不明确、房间存在多个候选时，机器人会先询问，不猜测、不调用电费接口。自然语言模型未配置时，机器人不会尝试猜意图或请求校园接口。
 
@@ -14,15 +14,25 @@ cp .env.example .env
 nano .env
 ```
 
-填写 QQ 开放平台的 `QQ_APP_ID`、`QQ_APP_SECRET`，以及兼容 OpenAI 的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。再确认 `LLM_ENABLED=true`、`ELECTRICITY_ENABLED=true` 和学校编号。API Key、AppSecret、电费会话凭证只放在服务器 `.env`，不要提交到 GitHub。
+填写 QQ 开放平台的 `QQ_APP_ID`、`QQ_APP_SECRET`，以及兼容 OpenAI 的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`。确认 `QQ_TRANSPORT=websocket`、`LLM_ENABLED=true`、`ELECTRICITY_ENABLED=true` 和学校编号。API Key、AppSecret、电费会话凭证只放在服务器 `.env`，不要提交到 GitHub。
 
 `ELECTRICITY_SCHOOL_CODE=1402` 使用内置宿舍目录；其他学校请配置对应的学校编号及映射文件。
 
 ## 启动
 
 ```bash
-uv run qqbot check
+uv run qqbot check --websocket
 uv run qqbot serve
 ```
 
-服务器默认监听 `127.0.0.1:8080`。QQ 消息回调为 `/qqbot`，健康检查为 `/healthz`。部署时用 Nginx 或 Caddy 配 HTTPS 并转发到本地端口，再在 QQ 开放平台填写回调 URL。Ubuntu root systemd 文件见 [deploy/qqbot-root.service](deploy/qqbot-root.service)。
+`check --websocket` 实际连接网关并检查鉴权和消息订阅，成功后立即断开，不调用模型或电费接口。检查前先停止同一 AppID 的其他机器人实例。
+
+启动日志出现“QQ WebSocket 鉴权成功”后，可在群里 @机器人或私聊查询。程序自动发送心跳，断线后以 5～60 秒退避重连，优先恢复会话；消息先持久化再推进网关序号，避免补发导致重复查询。WebSocket 模式不监听 HTTP 端口，原来的 `QQ_HOST`、`QQ_PORT` 配置无需修改。
+
+服务器需要能访问 QQ 和模型接口；如 QQ 平台要求 IP 白名单，填写服务器的公网出口 IP。未上线机器人需在平台配置测试群和测试成员。AppID 的 WebSocket 是否开放以实际鉴权结果为准；如收到权限或连接方式拒绝，日志会给出提示，不会自行切换 Webhook。Ubuntu root systemd 文件见 [deploy/qqbot-root.service](deploy/qqbot-root.service)。永久鉴权或权限错误退出码为 78，systemd 不会无限重试；修正配置后手动重启。
+
+## 可选 Webhook 模式
+
+仅在应用需要 Webhook 时设置 `QQ_TRANSPORT=webhook`，或运行 `uv run qqbot serve --transport webhook`。该模式监听 `127.0.0.1:8080`，QQ 回调为 `/qqbot`，健康检查为 `/healthz`；需要公网 HTTPS 转发和平台回调配置。两种模式共用同一电费查询和消息去重逻辑，只运行一个实例。
+
+连接协议参考 QQ 官方的 [事件订阅与通知](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html)、[WSS 接入点](https://bot.q.qq.com/wiki/develop/api-v2/openapi/wss/url_get.html) 和 [网关错误码](https://bot.q.qq.com/wiki/develop/api-v2/openapi/error/error.html)。

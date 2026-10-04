@@ -24,6 +24,7 @@ def _boolean(name: str, default: bool) -> bool:
 class Settings:
     app_id: str
     app_secret: str = field(repr=False)
+    transport: str = "websocket"
     host: str = "127.0.0.1"
     port: int = 8080
     db_path: Path = Path("data/qqbot.sqlite3")
@@ -59,6 +60,9 @@ class Settings:
         app_secret = os.getenv("QQ_APP_SECRET", "").strip()
         if require_qq and (not app_id or not app_secret):
             raise ConfigurationError("请在 .env 中填写 QQ_APP_ID 和 QQ_APP_SECRET。")
+        transport = os.getenv("QQ_TRANSPORT", "websocket").strip().lower()
+        if transport not in {"websocket", "webhook"}:
+            raise ConfigurationError("QQ_TRANSPORT 必须为 websocket 或 webhook。")
 
         try:
             port = int(os.getenv("QQ_PORT", "8080"))
@@ -133,6 +137,7 @@ class Settings:
         return cls(
             app_id=app_id,
             app_secret=app_secret,
+            transport=transport,
             host=os.getenv("QQ_HOST", "127.0.0.1").strip(),
             port=port,
             db_path=db_path,

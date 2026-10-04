@@ -104,3 +104,6 @@ class QQAPI:
 
     async def me(self):
         return await self.request("GET", "/users/@me")
+
+    async def gateway(self):
+        return await self.request("GET", "/gateway")
