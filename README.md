@@ -71,3 +71,5 @@ uv run --no-dev python scripts/clear_qq_panels.py --scope all --apply
 ```
 
 第一条只查看，第二条备份后删除当前 AppID 四个场景的全部指令面板。只清理群聊可以使用 `--scope group`。删除间隔至少 6.1 秒，遇到错误即停止；面板完整详情保存在忽略的 `data/qq-panels-backup/`，不打印凭证或关联对象 ID。这个脚本处理 [指令面板](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/)，不修改单聊底部的自定义菜单；接口无记录而客户端仍有指令时，需进一步检查旧平台配置或客户端缓存。
+
+脚本删除成功只代表对应 API 面板删除成功，不能证明客户端所有指令来源已清空。电脑和手机重新登录后仍出现同一组旧指令时，请核对机器人应用身份、管理端的“发布设置 → 功能配置 → 指令配置”和测试/已发布版本；腾讯的 [管理端接入说明](https://github.com/tencent-connect/bot-docs/blob/main/docs/README.md) 也描述了这些配置入口。不能仅凭空列表就认定是本机缓存。

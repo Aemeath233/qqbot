@@ -159,3 +159,8 @@ async def test_missing_records_without_explicit_end_is_still_rejected(response):
     api.request.return_value = response
     with pytest.raises(cleanup.PanelError):
         await cleanup.collect_panels(api, ("group",), AsyncMock())
+
+
+def test_diagnostics_preserve_pagination_booleans_without_string_values():
+    structure = cleanup.response_structure({"is_end": True, "access_token": "private-value"})
+    assert structure == {"is_end": True, "access_token": "str"}

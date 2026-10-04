@@ -51,6 +51,8 @@ def response_structure(value, depth=0):
             "length": len(value),
             "first_structure": response_structure(value[0], depth + 1) if value else None,
         }
+    if type(value) is bool:
+        return value
     return type(value).__name__
 
 
@@ -185,7 +187,11 @@ async def run(args):
         records = await collect_panels(api, scopes, pacer)
         print(f"找到 {len(records)} 个指令面板。", flush=True)
         if not records:
-            print("未发送删除请求。若 QQ 仍显示旧指令，请检查旧版平台指令配置或客户端缓存。")
+            print(
+                "未发送删除请求。API 面板为空不代表管理端旧指令配置也为空。"
+                "若电脑和手机仍显示旧指令，请查看 QQ 开放平台的发布设置/功能配置/指令配置，"
+                "并核对测试与已发布配置。"
+            )
             return
         for record in records:
             panel = record.get("panel")
@@ -196,7 +202,10 @@ async def run(args):
             print("仅查看，未修改配置。添加 --apply 才会备份并删除这些面板。")
             return
         removed = await clear_panels(api, records, pacer, backup_dir=Path("data/qq-panels-backup"))
-        print(f"清理完成：删除 {removed} 个面板。请重新进入 QQ 会话检查指令列表。")
+        print(
+            f"API 清理完成：删除 {removed} 个面板。"
+            "请在 QQ 客户端验证；若旧指令仍在，还需检查管理端旧指令和测试/发布配置。"
+        )
 
 
 def main():
