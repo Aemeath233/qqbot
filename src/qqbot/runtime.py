@@ -12,7 +12,7 @@ import aiohttp
 from qqbot.api import QQAPIError
 from qqbot.commands import ReplyTask
 from qqbot.config import Settings
-from qqbot.dorm_state import DormState, UserContext
+from qqbot.dorm_state import DormState, UserContext, identity_tag
 from qqbot.inbox import INTERRUPTED_REPLY, Inbox, InboxFull
 from qqbot.interactions import ButtonClick
 from qqbot.light_commands import LightCommandRouter
@@ -30,6 +30,9 @@ class Runtime:
         self.router = LightCommandRouter()
         self.inbox = Inbox(settings.db_path)
         self.state = DormState(self.inbox.db, settings.app_id)
+        discarded = self.inbox.discard_legacy_button_jobs()
+        if discarded:
+            logger.info("已停止 %d 个旧版按钮任务，请使用新查询结果的按钮", discarded)
         if assistant is not None:
             assistant.state = self.state
         self.wakeup = asyncio.Event()
@@ -45,23 +48,40 @@ class Runtime:
                 click.message.kind, click.message.target_id, click.message.sender_id
             )
             try:
-                action = self.state.action(click.data, context)
+                action = self.state.action(click.data, context, button_id=click.button_id)
             except PermissionError:
+                logger.warning(
+                    "拒绝不匹配按钮：群=%s，用户=%s",
+                    identity_tag(context.target_id),
+                    identity_tag(context.sender_id),
+                )
                 return click.ack_id, 4
             if action is None:
-                task = ReplyTask("text", "按钮已过期或不可用，请重新查询宿舍电量后再操作。")
-                code = 1
-            else:
-                task = ReplyTask(
-                    "button_" + action["action"],
-                    json.dumps(
-                        {
-                            "dormitory": action["dormitory"],
-                            "area": action["area"],
-                        }
-                    ),
-                )
-                code = 0
+                # 无法验证来源时仅确认失败，不在未经验证的群里执行或发送绑定结果。
+                return click.ack_id, 1
+            task = ReplyTask(
+                "button_" + action["action"],
+                json.dumps(
+                    {
+                        "version": 2,
+                        "action": action["action"],
+                        "dormitory": action["dormitory"],
+                        "area": action["area"],
+                        "request_id": action["request_id"],
+                        "origin_kind": action["kind"],
+                        "origin_target": action["target_id"],
+                        "origin_sender": context.sender_id,
+                    }
+                ),
+            )
+            logger.info(
+                "收到按钮：动作=%s，群=%s，用户=%s，按钮=%s",
+                action["action"],
+                identity_tag(context.target_id),
+                identity_tag(context.sender_id),
+                identity_tag(action["button_id"]),
+            )
+            code = 0
             try:
                 added = self.inbox.add_task(click.message, task)
             except InboxFull:
@@ -73,7 +93,29 @@ class Runtime:
             payload, accept_full_group=self.settings.accept_group_messages
         )
         if message is not None:
-            task = self.router.plan(message, llm_enabled=self.settings.llm_enabled)
+            context = UserContext(message.kind, message.target_id, message.sender_id)
+            pending = self.state.latest_request(context)
+            decision = message.content.strip().casefold()
+            yes = {"是", "yes", "确认", "确定", "确认更换", "确认绑定"}
+            no = {"否", "no", "取消", "取消更换", "取消绑定", "不更换"}
+            if pending is not None and decision in yes | no:
+                task = ReplyTask(
+                    "binding_decision",
+                    json.dumps(
+                        {
+                            "request_id": pending["request_id"],
+                            "confirm": decision in yes,
+                        }
+                    ),
+                )
+            else:
+                task = self.router.plan(message, llm_enabled=self.settings.llm_enabled)
+            logger.info(
+                "收到消息：场景=%s，群=%s，用户=%s",
+                message.kind,
+                identity_tag(message.target_id),
+                identity_tag(message.sender_id),
+            )
             if task is not None and self.inbox.add_task(message, task):
                 self.wakeup.set()
 
@@ -129,18 +171,42 @@ class Runtime:
                             kind = job["task_kind"]
                             if kind.startswith("button_"):
                                 args = json.loads(job["task_payload"])
+                                valid_origin = (
+                                    isinstance(args, dict)
+                                    and args.get("version") == 2
+                                    and args.get("origin_kind") == context.kind
+                                    and args.get("origin_target") == context.target_id
+                                    and args.get("origin_sender") == context.sender_id
+                                    and isinstance(args.get("action"), str)
+                                    and "button_" + args["action"] == kind
+                                )
+                                if not valid_origin:
+                                    self.inbox.failed(job["key"], job["attempts"] + 1, retry=False)
+                                    logger.error("按钮任务来源不一致，未执行或发送回复")
+                                    return
                                 if kind == "button_query":
                                     content = await self.assistant.query_electricity(
                                         args["dormitory"], args["area"], context=context
                                     )
                                 elif kind == "button_bind":
-                                    content = self.state.bind_once(
+                                    content = self.state.request_binding(
                                         context, args["dormitory"], args["area"]
+                                    )
+                                elif kind in {"button_confirm_bind", "button_cancel_bind"}:
+                                    content = self.state.finish_binding(
+                                        context,
+                                        args["request_id"],
+                                        confirm=kind == "button_confirm_bind",
                                     )
                                 elif kind == "button_help":
                                     content = help_reply()
                                 else:
                                     content = "这个按钮暂不可用，请重新查询。"
+                            elif kind == "binding_decision":
+                                args = json.loads(job["task_payload"])
+                                content = self.state.finish_binding(
+                                    context, args["request_id"], confirm=args["confirm"]
+                                )
                             else:
                                 content = await self.assistant.generate(
                                     kind, job["task_payload"], context=context
@@ -178,6 +244,23 @@ class Runtime:
 
     async def send_reply(self, job, content):
         reply = content if isinstance(content, Reply) else Reply(content)
+        if reply.keyboard:
+            context = UserContext(job["kind"], job["target_id"], job["sender_id"])
+            buttons = [
+                button for row in reply.keyboard["content"]["rows"] for button in row["buttons"]
+            ]
+            try:
+                valid = all(
+                    self.state.action(button["action"]["data"], context, button_id=button["id"])
+                    is not None
+                    for button in buttons
+                )
+            except PermissionError:
+                logger.error("回复按钮来源不符，未发送：群=%s", identity_tag(context.target_id))
+                raise
+            if not valid:
+                reply = replace(reply, keyboard=None)
+                self.inbox.save_content(job["key"], reply)
         reference = job["reference"]
         while reply.markdown and getattr(self.api, "markdown_enabled", True):
             try:
@@ -190,8 +273,10 @@ class Runtime:
                     reference=reference,
                 )
                 logger.info(
-                    "电费回复使用 Markdown%s",
+                    "电费回复使用 Markdown%s：群=%s，用户=%s",
                     "和回调按钮" if reply.keyboard and self.api.buttons_enabled else "",
+                    identity_tag(job["target_id"]),
+                    identity_tag(job["sender_id"]),
                 )
                 return
             except QQAPIError as exc:
@@ -229,4 +314,9 @@ class Runtime:
         options = {"reference": reference} if reference != "msg_id" else {}
         await self.api.send_text(
             job["kind"], job["target_id"], job["message_id"], reply.text, **options
+        )
+        logger.info(
+            "电费文本回复：群=%s，用户=%s",
+            identity_tag(job["target_id"]),
+            identity_tag(job["sender_id"]),
         )

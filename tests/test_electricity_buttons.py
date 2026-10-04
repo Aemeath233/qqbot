@@ -70,6 +70,12 @@ def action_data(reply, index):
     return reply.keyboard["content"]["rows"][0]["buttons"][index]["action"]["data"]
 
 
+def set_binding(state, context, dormitory="33#4032", area="2"):
+    state.request_binding(context, dormitory, area)
+    request = state.latest_request(context)
+    return state.finish_binding(context, request["request_id"], confirm=True)
+
+
 @pytest.mark.parametrize(
     "quantity,low", [("49.99", True), ("50", False), ("50.01", False), ("0", True)]
 )
@@ -88,8 +94,9 @@ def test_buttons_are_callbacks_with_owner_permission_and_bind_confirmation(runti
     assert all(
         b["action"]["permission"] == {"type": 0, "specify_user_ids": ["sender-1"]} for b in buttons
     )
-    assert "不可更换" in buttons[1]["action"]["modal"]["content"]
-    assert len(buttons[1]["action"]["modal"]["content"]) <= 40
+    assert "modal" not in buttons[1]["action"]
+    assert len({button["id"] for button in buttons}) == 3
+    assert all(button["action"]["data"].startswith("electricity:v2:") for button in buttons)
 
 
 async def test_again_queries_without_model_and_replies_using_event_id(runtime):
@@ -108,6 +115,10 @@ async def test_binding_then_natural_query_uses_default_and_persists(runtime):
     await runtime.handle_event(interaction(action_data(card(runtime), 1)))
     await runtime.process(runtime.inbox.next())
     user = UserContext("groups", "group-1", "sender-1")
+    assert runtime.state.binding(user) is None
+    prompt = Reply("", "", runtime.api.send_markdown.call_args.kwargs["keyboard"])
+    await runtime.handle_event(interaction(action_data(prompt, 0), click_id="confirm-1"))
+    await runtime.process(runtime.inbox.next())
     assert runtime.state.binding(user)["dormitory"] == "33#4032"
     reply = await runtime.assistant.generate("chat", "查一下电费", context=user)
     assert isinstance(reply, Reply)
@@ -120,9 +131,12 @@ async def test_binding_then_natural_query_uses_default_and_persists(runtime):
     with sqlite3.connect(runtime.settings.db_path) as db:
         db.row_factory = sqlite3.Row
         state = DormState(db, "test-app")
-        denied = state.bind_once(user, "33#2035", "2")
-        assert "不能更换" in denied.text
+        confirmation = state.request_binding(user, "33#2035", "2")
+        assert "是否更换" in confirmation.text
         assert state.binding(user)["dormitory"] == "33#4032"
+        request = state.latest_request(user)
+        state.finish_binding(user, request["request_id"], confirm=True)
+        assert state.binding(user)["dormitory"] == "33#2035"
 
 
 async def test_unbound_model_omission_asks_for_room(runtime):
@@ -249,7 +263,7 @@ def test_interaction_scene_and_ack_id_validation():
 
 
 async def test_default_binding_does_not_leak_to_other_users(runtime):
-    runtime.state.bind_once(UserContext("groups", "group-1", "sender-1"), "33#4032", "2")
+    set_binding(runtime.state, UserContext("groups", "group-1", "sender-1"))
     reply = await runtime.assistant.generate(
         "chat", "查一下电费", context=UserContext("groups", "group-1", "other-user")
     )
@@ -261,7 +275,7 @@ async def test_default_binding_does_not_leak_to_other_users(runtime):
 
 async def test_model_empty_dormitory_can_use_binding(runtime):
     user = UserContext("groups", "group-1", "sender-1")
-    runtime.state.bind_once(user, "33#4032", "2")
+    set_binding(runtime.state, user)
     runtime.assistant.model.complete.return_value = {
         "tool_calls": [{"function": {"name": "query_electricity", "arguments": '{"dormitory":""}'}}]
     }
@@ -337,3 +351,221 @@ async def test_websocket_button_to_ack_query_and_markdown_wire(runtime):
     assert len(bodies[0]["keyboard"]["content"]["rows"][0]["buttons"]) == 3
     runtime.assistant.model.complete.assert_not_awaited()
     runtime.assistant.electricity.query.assert_awaited_once()
+
+
+async def test_query_and_again_never_bind_in_either_group(runtime):
+    first = UserContext("groups", "group-1", "sender-1")
+    second = UserContext("groups", "group-2", "sender-1")
+    runtime.assistant.model.complete.return_value = {
+        "tool_calls": [
+            {"function": {"name": "query_electricity", "arguments": '{"dormitory":"33#4032"}'}}
+        ]
+    }
+    await runtime.assistant.generate("chat", "查33楼4032电费", context=first)
+    reply = card(runtime)
+    await runtime.handle_event(interaction(action_data(reply, 0), click_id="again-group-a"))
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(first) is None and runtime.state.binding(second) is None
+    assert runtime.state.latest_request(first) is None
+    assert runtime.api.send_markdown.call_args.args[1] == "group-1"
+
+
+def test_bindings_are_independent_for_same_user_in_two_groups(runtime):
+    first = UserContext("groups", "group-1", "sender-1")
+    second = UserContext("groups", "group-2", "sender-1")
+    set_binding(runtime.state, first, "33#4032")
+    assert runtime.state.binding(second) is None
+    set_binding(runtime.state, second, "33#2004")
+    assert runtime.state.binding(first)["dormitory"] == "33#4032"
+    assert runtime.state.binding(second)["dormitory"] == "33#2004"
+
+
+async def test_cross_group_callback_cannot_query_or_bind(runtime):
+    reply = card(runtime)
+    await runtime.handle_event(interaction(action_data(reply, 0), group="group-2"))
+    runtime.api.acknowledge_interaction.assert_awaited_once_with("click-1", 4)
+    assert runtime.inbox.pending_count() == 0
+    runtime.assistant.electricity.query.assert_not_awaited()
+    runtime.api.send_markdown.assert_not_awaited()
+
+
+async def test_button_id_mismatch_cannot_turn_query_into_bind(runtime):
+    reply = card(runtime)
+    buttons = reply.keyboard["content"]["rows"][0]["buttons"]
+    event = interaction(action_data(reply, 1))
+    event["d"]["data"]["resolved"]["button_id"] = buttons[0]["id"]
+    await runtime.handle_event(event)
+    runtime.api.acknowledge_interaction.assert_awaited_once_with("click-1", 4)
+    assert runtime.state.latest_request(UserContext("groups", "group-1", "sender-1")) is None
+    assert runtime.inbox.pending_count() == 0
+
+
+def test_buttons_have_unique_ids_across_groups_and_messages(runtime):
+    first = card(runtime)
+    second = runtime.state.card(result(), UserContext("groups", "group-2", "sender-1"))
+    third = card(runtime)
+    ids = [
+        b["id"]
+        for reply in (first, second, third)
+        for b in reply.keyboard["content"]["rows"][0]["buttons"]
+    ]
+    assert len(ids) == len(set(ids)) == 9
+
+
+async def test_bind_other_room_requires_yes_and_no_keeps_old_binding(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    set_binding(runtime.state, context, "33#4032")
+    prompt = runtime.state.request_binding(context, "33#2004", "2")
+    assert "是否更换" in prompt.text
+    assert runtime.state.binding(context)["dormitory"] == "33#4032"
+    await runtime.handle_event(interaction(action_data(prompt, 1), click_id="say-no"))
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(context)["dormitory"] == "33#4032"
+    assert "已取消" in runtime.api.send_text.call_args.args[3]
+    # 旧确认卡的“是”在已取消后也不能修改。
+    await runtime.handle_event(interaction(action_data(prompt, 0), click_id="late-yes"))
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(context)["dormitory"] == "33#4032"
+
+
+async def test_natural_language_rebind_only_proposes_and_exact_yes_commits(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    set_binding(runtime.state, context, "33#4032")
+    runtime.assistant.model.complete.return_value = {
+        "tool_calls": [
+            {"function": {"name": "request_dorm_binding", "arguments": '{"dormitory":"33#2004"}'}}
+        ]
+    }
+    prompt = await runtime.assistant.generate("chat", "更换绑定宿舍为33楼2004室", context=context)
+    assert [
+        b["render_data"]["label"] for b in prompt.keyboard["content"]["rows"][0]["buttons"]
+    ] == ["是", "否"]
+    assert runtime.state.binding(context)["dormitory"] == "33#4032"
+    runtime.assistant.electricity.query.assert_not_awaited()
+    runtime.accept_event(event_payload(group=True, content="确认更换", message_id="explicit-yes"))
+    await runtime.process(runtime.inbox.next())
+    assert runtime.state.binding(context)["dormitory"] == "33#2004"
+
+
+async def test_model_binding_request_cannot_write_without_confirmation(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.assistant.model.complete.return_value = {
+        "tool_calls": [
+            {"function": {"name": "request_dorm_binding", "arguments": '{"dormitory":"33#2004"}'}}
+        ]
+    }
+    await runtime.assistant.generate("chat", "查33楼2004电费", context=context)
+    assert runtime.state.binding(context) is None
+
+
+def test_old_confirmation_cannot_overwrite_newer_binding(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(context, "33#4032", "2")
+    old = runtime.state.latest_request(context)["request_id"]
+    runtime.state.request_binding(context, "33#2004", "2")
+    new = runtime.state.latest_request(context)["request_id"]
+    runtime.state.finish_binding(context, new, confirm=True)
+    stale = runtime.state.finish_binding(context, old, confirm=True)
+    assert "失效" in stale.text
+    assert runtime.state.binding(context)["dormitory"] == "33#2004"
+
+
+def test_confirmation_is_scoped_to_user_and_group(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(context, "33#4032", "2")
+    request_id = runtime.state.latest_request(context)["request_id"]
+    for wrong in (
+        UserContext("groups", "group-2", "sender-1"),
+        UserContext("groups", "group-1", "other"),
+    ):
+        runtime.state.finish_binding(wrong, request_id, confirm=True)
+        assert runtime.state.binding(wrong) is None
+    assert runtime.state.binding(context) is None
+
+
+def test_legacy_unscoped_binding_is_preserved_but_not_inherited(runtime):
+    import json
+
+    old = json.dumps(["test-app", "groups", "sender-1"], separators=(",", ":"))
+    runtime.inbox.db.execute("INSERT INTO dorm_bindings VALUES (?,?,?,?)", (old, "21#2011", "1", 0))
+    runtime.inbox.db.commit()
+    assert runtime.state.binding(UserContext("groups", "group-1", "sender-1")) is None
+    assert runtime.state.binding(UserContext("groups", "group-2", "sender-1")) is None
+    assert runtime.inbox.db.execute("SELECT COUNT(*) FROM dorm_bindings").fetchone()[0] == 1
+
+
+async def test_invalid_task_origin_never_sends_to_another_group(runtime):
+    import json
+
+    from qqbot.commands import ReplyTask
+    from qqbot.messages import Message
+
+    message = Message.from_payload(event_payload(group=True, content="query"))
+    payload = {
+        "version": 2,
+        "action": "query",
+        "origin_kind": "groups",
+        "origin_target": "group-2",
+        "origin_sender": "sender-1",
+        "dormitory": "33#4032",
+        "area": "2",
+    }
+    runtime.inbox.add_task(message, ReplyTask("button_query", json.dumps(payload)))
+    await runtime.process(runtime.inbox.next())
+    runtime.api.send_markdown.assert_not_awaited()
+    runtime.api.send_text.assert_not_awaited()
+    runtime.assistant.electricity.query.assert_not_awaited()
+
+
+def test_restart_discards_unverified_legacy_button_tasks(runtime):
+    from qqbot.commands import ReplyTask
+    from qqbot.messages import Message
+
+    message = Message.from_payload(event_payload(group=True, content="bind"))
+    runtime.inbox.add_task(message, ReplyTask("button_bind", '{"dormitory":"21#2011","area":"1"}'))
+    replacement = Runtime(runtime.settings, runtime.api, None)
+    try:
+        assert replacement.inbox.pending_count() == 0
+        assert replacement.state.binding(UserContext("groups", "group-1", "sender-1")) is None
+    finally:
+        replacement.inbox.close()
+
+
+def test_legacy_private_binding_can_be_safely_migrated(runtime):
+    import json
+
+    from qqbot.dorm_state import DormState
+
+    old = json.dumps(["test-app", "users", "private-user"], separators=(",", ":"))
+    runtime.inbox.db.execute("INSERT INTO dorm_bindings VALUES (?,?,?,?)", (old, "33#4032", "2", 0))
+    runtime.inbox.db.commit()
+    state = DormState(runtime.inbox.db, "test-app")
+    assert (
+        state.binding(UserContext("users", "private-user", "private-user"))["dormitory"]
+        == "33#4032"
+    )
+    assert state.binding(UserContext("groups", "group-1", "private-user")) is None
+
+
+async def test_card_from_group_a_is_never_sent_to_group_b(runtime):
+    from qqbot.commands import ReplyTask
+    from qqbot.messages import Message
+
+    first_card = card(runtime)
+    payload = event_payload(group=True, content="query")
+    payload["d"]["group_openid"] = "group-2"
+    message = Message.from_payload(payload)
+    runtime.inbox.add_task(message, ReplyTask("text", "reply"))
+    with pytest.raises(PermissionError):
+        await runtime.send_reply(runtime.inbox.next(), first_card)
+    runtime.api.send_markdown.assert_not_awaited()
+    runtime.api.send_text.assert_not_awaited()
+
+
+def test_binding_confirmation_does_not_coerce_non_boolean_values(runtime):
+    context = UserContext("groups", "group-1", "sender-1")
+    runtime.state.request_binding(context, "33#4032", "2")
+    request = runtime.state.latest_request(context)
+    with pytest.raises(ValueError):
+        runtime.state.finish_binding(context, request["request_id"], confirm="false")
+    assert runtime.state.binding(context) is None

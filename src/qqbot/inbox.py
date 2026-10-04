@@ -1,5 +1,6 @@
 """先持久化再确认回调；固定 msg_seq 配合平台去重。仅运行一个服务实例。"""
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -199,6 +200,24 @@ class Inbox:
 
     def pending_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM replies WHERE state = 'pending'").fetchone()[0]
+
+    def discard_legacy_button_jobs(self):
+        # 旧按钮任务没有来源和动作版本，升级后不能继续执行绑定或发送旧绑定结果。
+        rows = self.db.execute(
+            "SELECT key,task_payload FROM replies "
+            "WHERE state='pending' AND task_kind LIKE 'button_%'"
+        ).fetchall()
+        discarded = 0
+        with self.db:
+            for row in rows:
+                try:
+                    data = json.loads(row["task_payload"])
+                except (ValueError, TypeError):
+                    data = None
+                if not isinstance(data, dict) or data.get("version") != 2:
+                    self.db.execute("UPDATE replies SET state='expired' WHERE key=?", (row["key"],))
+                    discarded += 1
+        return discarded
 
     def close(self):
         self.db.close()

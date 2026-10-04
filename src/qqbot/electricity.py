@@ -52,12 +52,7 @@ class ElectricityClient:
             raise ElectricityError(
                 "电费查询尚未启用，请在 .env 中设置 ELECTRICITY_ENABLED=true。", "disabled"
             )
-        try:
-            if self.directory is None:
-                self.directory = DormDirectory.load(self.settings.electricity_map_path)
-            room = self.directory.resolve(dormitory, area or self.settings.electricity_default_area)
-        except DormError as exc:
-            raise ElectricityError(str(exc), exc.code, exc.candidates) from None
+        room = self.resolve_room(dormitory, area)
         cache_key = json.dumps([room.area, room.roomverify])
         async with self._lock:
             now = time.monotonic()
@@ -90,6 +85,14 @@ class ElectricityClient:
             result["area_name"] = room.area_name
             self.cache[cache_key] = (time.monotonic(), result)
             return dict(result)
+
+    def resolve_room(self, dormitory, area=""):
+        try:
+            if self.directory is None:
+                self.directory = DormDirectory.load(self.settings.electricity_map_path)
+            return self.directory.resolve(dormitory, area or self.settings.electricity_default_area)
+        except DormError as exc:
+            raise ElectricityError(str(exc), exc.code, exc.candidates) from None
 
     async def _query(self, dormitory: str, roomverify: str) -> dict:
         inner = {

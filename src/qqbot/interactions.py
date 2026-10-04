@@ -12,6 +12,7 @@ class ButtonClick:
     ack_id: str
     message: Message
     data: str
+    button_id: str = ""
 
     @classmethod
     def parse(cls, payload, app_id):
@@ -27,6 +28,11 @@ class ButtonClick:
         if not isinstance(resolved, dict):
             raise ValueError("互动事件缺少按钮数据")
         scene = event.get("scene") or {1: "group", 2: "c2c"}.get(event.get("chat_type"))
+        if (
+            event.get("chat_type") is not None
+            and {"group": 1, "c2c": 2}.get(scene) != event["chat_type"]
+        ):
+            raise ValueError("互动场景与聊天类型不一致")
         if scene == "group":
             kind, target, sender = (
                 "groups",
@@ -41,6 +47,7 @@ class ButtonClick:
         ack_id = event.get("id")
         event_id = payload.get("id") or ack_id
         button_data = resolved.get("button_data")
+        button_id = resolved.get("button_id", "")
         if not all(
             isinstance(item, str) and 0 < len(item) <= 512
             for item in (ack_id, event_id, target, sender)
@@ -48,6 +55,8 @@ class ButtonClick:
             raise ValueError("互动事件缺少有效标识")
         if not isinstance(button_data, str) or len(button_data) > 128:
             raise ValueError("按钮数据格式异常")
+        if not isinstance(button_id, str) or len(button_id) > 128:
+            raise ValueError("按钮标识格式异常")
         expires_at = time.time() + 300
         if isinstance(event.get("timestamp"), str):
             try:
@@ -59,4 +68,4 @@ class ButtonClick:
         message = Message(
             kind, target, event_id, "", expires_at, sender_id=sender, reference="event_id"
         )
-        return cls(ack_id, message, button_data)
+        return cls(ack_id, message, button_data, button_id)
