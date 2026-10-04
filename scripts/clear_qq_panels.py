@@ -16,6 +16,7 @@ from qqbot.api import QQAPI, QQAPIError
 from qqbot.config import ConfigurationError, Settings
 
 SCOPES = ("c2c", "group", "channel", "dm")
+SCRIPT_VERSION = "2026-10-04.5"
 
 
 class PanelAPI(QQAPI):
@@ -184,6 +185,9 @@ async def run(args):
     pacer = RequestPacer()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
         api = PanelAPI(settings, session)
+        if args.diagnose:
+            await diagnose(api, settings, scopes, pacer)
+            return
         records = await collect_panels(api, scopes, pacer)
         print(f"找到 {len(records)} 个指令面板。", flush=True)
         if not records:
@@ -208,10 +212,89 @@ async def run(args):
         )
 
 
+async def diagnose(api, settings, scopes, pacer):
+    print(f"检查脚本版本：{SCRIPT_VERSION}；只读检查，不修改菜单。", flush=True)
+    await pacer.wait("read")
+    try:
+        me = await api.me()
+        profile = unwrap_response(me, "username") or me
+    except QQAPIError as exc:
+        print(f"机器人名称查询失败：{exc}；继续检查面板。", flush=True)
+        profile = {}
+    print(
+        json.dumps(
+            {
+                "机器人名称": profile.get("username", "接口未提供"),
+                "AppID后四位": settings.app_id[-4:],
+                "API地址": api.base_url,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    for scope in scopes:
+        try:
+            records = await collect_panels(api, (scope,), pacer)
+        except (PanelError, QQAPIError) as exc:
+            print(f"场景 {scope} 检查未完成：{exc}", flush=True)
+            continue
+        print(f"场景 {scope}：{len(records)} 个 API 面板。", flush=True)
+        for record in records:
+            panel = record.get("panel", {})
+            items = panel.get("items", []) if isinstance(panel, dict) else []
+            names = [item.get("name", "") for item in items if isinstance(item, dict)]
+            print(
+                json.dumps(
+                    {
+                        "scope": record["scope"],
+                        "target_type": record.get("target_type"),
+                        "commands": names,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+    backups = await asyncio.to_thread(
+        lambda: sorted(Path("data/qq-panels-backup").glob("panels-*.json"))
+    )
+    if backups:
+        try:
+            saved = json.loads(await asyncio.to_thread(backups[-1].read_text, encoding="utf-8"))
+            panels = saved.get("panels", [])
+            print("最近删除备份：" + backups[-1].name, flush=True)
+            for item in panels:
+                panel = item.get("panel", {})
+                names = [
+                    entry.get("name", "")
+                    for entry in panel.get("items", [])
+                    if isinstance(entry, dict)
+                ]
+                print(
+                    json.dumps(
+                        {
+                            "备份场景": item.get("scope"),
+                            "作用范围": item.get("target_type"),
+                            "关联群数量": len(item.get("group_openids", [])),
+                            "commands": names,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+        except (ValueError, TypeError, AttributeError):
+            print("最近备份结构无法识别，未输出原始内容。", flush=True)
+    print("检查结束。请核对机器人名称与管理端 AppID 后四位，并对照客户端仍显示的指令。")
+
+
 def main():
     parser = argparse.ArgumentParser(description="清理当前 QQ AppID 在平台保存的旧指令面板")
     parser.add_argument("--scope", choices=("all", *SCOPES), default="group", help="默认只处理群聊")
-    parser.add_argument("--apply", action="store_true", help="先备份配置，再删除所选场景的全部面板")
+    parser.add_argument("--version", action="version", version=SCRIPT_VERSION)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true", help="先备份配置，再删除所选场景的全部面板")
+    mode.add_argument(
+        "--diagnose", action="store_true", help="只读检查机器人身份、各场景面板和最近备份"
+    )
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

@@ -164,3 +164,19 @@ async def test_missing_records_without_explicit_end_is_still_rejected(response):
 def test_diagnostics_preserve_pagination_booleans_without_string_values():
     structure = cleanup.response_structure({"is_end": True, "access_token": "private-value"})
     assert structure == {"is_end": True, "access_token": "str"}
+
+
+async def test_diagnose_is_read_only_and_masks_identity(settings, capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    api = AsyncMock()
+    api.base_url = "https://api.bot.qq.com"
+    api.me.return_value = {"username": "Nahida", "id": "private-bot-id"}
+    api.request.return_value = {"is_end": True}
+    await cleanup.diagnose(api, settings, cleanup.SCOPES, AsyncMock())
+    output = capsys.readouterr().out
+    assert "Nahida" in output
+    assert "private-bot-id" not in output
+    assert settings.app_secret not in output
+    assert settings.app_id not in output
+    assert api.request.await_count == 4
+    assert all(call.args[0] == "GET" for call in api.request.call_args_list)
